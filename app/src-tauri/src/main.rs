@@ -119,7 +119,7 @@ fn main() {
             engine_versions
         ])
         .build(tauri::generate_context!())
-        .expect("не удалось запустить Mosaic")
+        .expect("failed to start Mosaic")
         .run(move |_app, event| {
             if let tauri::RunEvent::Exit = event {
                 // Restore the system proxy and kill engines before the process exits.

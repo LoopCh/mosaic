@@ -1,5 +1,5 @@
-//! The controller owns state, the running session (hub + engines) and is the
-//! only API the UI and CLI talk to.
+//! The controller owns state, the running session (hub + engines + TUN) and
+//! is the only API the UI and CLI talk to.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,10 +13,13 @@ use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 use crate::engines::{self, singbox, Slot};
+use crate::geo::{self, GeoData};
 use crate::hub::{self, Hub, Routing, Upstream};
 use crate::links;
 use crate::model::*;
 use crate::process::{self, EngineProcess};
+use crate::resolver::Resolver;
+use crate::rules;
 use crate::stats::{ConnView, Stats};
 use crate::store;
 use crate::sys;
@@ -46,6 +49,7 @@ pub struct NodeView {
 pub struct Status {
     pub connected: bool,
     pub mode: Option<Mode>,
+    pub tun_stack: Option<TunStack>,
     pub since_ms: Option<u64>,
     pub up: u64,
     pub down: u64,
@@ -82,6 +86,9 @@ pub struct Snapshot {
     pub engines: Vec<EngineInfo>,
     pub is_admin: bool,
     pub data_dir: String,
+    pub native_tun_available: bool,
+    pub geoip_file: Option<String>,
+    pub geosite_file: Option<String>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -96,15 +103,31 @@ pub struct ImportSummary {
 struct Session {
     hub: Hub,
     engines: Vec<EngineProcess>,
+    /// sing-box TUN adapter.
     front: Option<EngineProcess>,
+    #[cfg(feature = "native-tun")]
+    native: Option<crate::tun_native::NativeTun>,
     upstreams: HashMap<String, Upstream>,
     mode: Mode,
+    tun_stack: TunStack,
     system_proxy: bool,
     started_ms: u64,
-    /// TUN mode: SOCKS port of the TUN adapter used for "direct" traffic.
+    /// sing-box adapter: SOCKS port used for the hub's "direct" traffic.
     direct_port: Option<u16>,
-    /// Node server domains (resolved with real DNS inside the TUN adapter).
-    server_domains: Vec<String>,
+    geo: Arc<GeoData>,
+    resolver: Arc<Resolver>,
+}
+
+impl Session {
+    fn tun_up(&self) -> bool {
+        #[cfg(feature = "native-tun")]
+        {
+            if self.native.is_some() {
+                return true;
+            }
+        }
+        self.front.is_some()
+    }
 }
 
 struct Inner {
@@ -121,13 +144,16 @@ pub struct Controller {
     admin: bool,
 }
 
-fn routing_for(st: &State, upstreams: &HashMap<String, Upstream>, direct_via: Option<u16>) -> Routing {
+fn routing_for(st: &State, s: &Session) -> Routing {
     Routing {
         rules: st.rules.clone(),
         final_target: st.settings.final_target.clone(),
         selected: st.selected.clone(),
-        upstreams: upstreams.clone(),
-        direct_via,
+        upstreams: s.upstreams.clone(),
+        direct_via: s.direct_port,
+        geo: s.geo.clone(),
+        strategy: st.settings.domain_strategy,
+        resolver: s.resolver.clone(),
     }
 }
 
@@ -192,13 +218,13 @@ impl Controller {
         let logs = Arc::new(LogBuf::new(2000));
         if state.proxy_dirty {
             match sys::unset_system_proxy() {
-                Ok(()) => logs.push("[hub] системный прокси сброшен после прошлого некорректного завершения"),
-                Err(e) => logs.push(format!("[hub] не удалось сбросить системный прокси: {e}")),
+                Ok(()) => logs.push("[hub] system proxy reset after an unclean shutdown"),
+                Err(e) => logs.push(format!("[hub] could not reset the system proxy: {e}")),
             }
             state.proxy_dirty = false;
             let _ = store::save_state(&dir, &state);
         }
-        logs.push(format!("[hub] данные: {}", dir.display()));
+        logs.push(format!("[hub] data: {}", dir.display()));
         Self {
             inner: Mutex::new(Inner { state, session: None, latency: HashMap::new() }),
             stats: Arc::new(Stats::default()),
@@ -210,7 +236,7 @@ impl Controller {
 
     fn save(&self, st: &State) {
         if let Err(e) = store::save_state(&self.dir, st) {
-            self.logs.push(format!("[hub] не удалось сохранить настройки: {e}"));
+            self.logs.push(format!("[hub] could not save settings: {e}"));
         }
     }
 
@@ -219,7 +245,7 @@ impl Controller {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("{name}.json"));
         let bytes = serde_json::to_vec_pretty(cfg).map_err(|e| e.to_string())?;
-        std::fs::write(&path, bytes).map_err(|e| format!("не удалось записать {}: {e}", path.display()))?;
+        std::fs::write(&path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         Ok(path)
     }
 
@@ -231,6 +257,24 @@ impl Controller {
         } else {
             format!("{msg}\n{}", tail.join("\n"))
         }
+    }
+
+    /// Decode the geoip/geosite codes the rules use (cheap: only those codes).
+    fn load_geo(&self, rules: &[Rule]) -> Arc<GeoData> {
+        let (ip, site) = rules::geo_codes(rules);
+        if ip.is_empty() && site.is_empty() {
+            return Arc::new(GeoData::default());
+        }
+        let (data, warnings) = geo::load(&ip, &site);
+        for w in warnings {
+            self.logs.push(format!("[hub] {w}"));
+        }
+        for (code, set) in &data.site {
+            if set.skipped_regex > 0 {
+                self.logs.push(format!("[hub] geosite:{code}: {} regex entries skipped (not supported yet)", set.skipped_regex));
+            }
+        }
+        Arc::new(data)
     }
 
     // ------------------------------------------------------------ queries
@@ -257,13 +301,14 @@ impl Controller {
         let status = Status {
             connected: s.is_some(),
             mode: s.map(|s| s.mode),
+            tun_stack: s.filter(|s| s.mode == Mode::Tun).map(|s| s.tun_stack),
             since_ms: s.map(|s| s.started_ms),
             up: self.stats.up.load(Relaxed),
             down: self.stats.down.load(Relaxed),
             active_conns: self.stats.active_count(),
             listen_port: s.map(|s| s.hub.port),
             system_proxy: s.map_or(false, |s| s.system_proxy),
-            tun: s.map_or(false, |s| s.front.is_some()),
+            tun: s.map_or(false, |s| s.tun_up()),
         };
         let engine_infos = EngineKind::ALL
             .iter()
@@ -278,6 +323,7 @@ impl Controller {
                 nodes: s.map_or(0, |s| s.upstreams.values().filter(|u| u.engine == k).count()),
             })
             .collect();
+        let (geoip_file, geosite_file) = geo::file_status();
         Snapshot {
             nodes,
             subscriptions: st.subscriptions.clone(),
@@ -288,6 +334,9 @@ impl Controller {
             engines: engine_infos,
             is_admin: self.admin,
             data_dir: self.dir.display().to_string(),
+            native_tun_available: cfg!(feature = "native-tun"),
+            geoip_file,
+            geosite_file,
         }
     }
 
@@ -319,7 +368,7 @@ impl Controller {
         let (added, updated) = merge_nodes(&mut g.state, res.nodes, None);
         self.save(&g.state);
         if g.session.is_some() && added > 0 {
-            self.logs.push("[hub] новые узлы станут доступны после переподключения");
+            self.logs.push("[hub] new nodes become available after reconnecting");
         }
         ImportSummary { added, updated, errors: res.errors }
     }
@@ -327,7 +376,7 @@ impl Controller {
     pub async fn add_subscription(&self, url: &str) -> Result<ImportSummary, String> {
         let url = url.trim().to_string();
         if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err("Ссылка подписки должна начинаться с http:// или https://".into());
+            return Err("A subscription URL must start with http:// or https://".into());
         }
         {
             let mut g = self.inner.lock().await;
@@ -351,17 +400,17 @@ impl Controller {
                     s.last_error = Some(e.clone());
                 }
                 self.save(st);
-                return Err(format!("Не удалось загрузить подписку: {e}"));
+                return Err(format!("Could not download the subscription: {e}"));
             }
         };
         let res = links::parse_text(&body);
         if res.nodes.is_empty() {
-            let why = res.errors.first().cloned().unwrap_or_else(|| "пустой ответ".into());
+            let why = res.errors.first().cloned().unwrap_or_else(|| "empty response".into());
             if let Some(s) = st.subscriptions.iter_mut().find(|s| s.url == url) {
                 s.last_error = Some(why.clone());
             }
             self.save(st);
-            return Err(format!("В подписке не найдено поддерживаемых узлов ({why})"));
+            return Err(format!("No supported nodes in the subscription ({why})"));
         }
         let ids: Vec<String> = res.nodes.iter().map(|n| n.id.clone()).collect();
         st.nodes.retain(|n| n.source.as_deref() != Some(url) || ids.contains(&n.id));
@@ -406,23 +455,19 @@ impl Controller {
         self.save(&g.state);
     }
 
+    /// Instant switch: TCP and UDP both follow the routing table, so nothing restarts.
     pub async fn select_node(&self, id: &str) -> Result<(), String> {
         let mut g = self.inner.lock().await;
-        let name = g.state.nodes.iter().find(|n| n.id == id).map(|n| n.name.clone()).ok_or("узел не найден")?;
+        let name = g.state.nodes.iter().find(|n| n.id == id).map(|n| n.name.clone()).ok_or("node not found")?;
         g.state.selected = Some(id.to_string());
         self.save(&g.state);
         let inner = &mut *g;
-        if let Some(s) = inner.session.as_mut() {
+        if let Some(s) = inner.session.as_ref() {
             if !s.upstreams.contains_key(id) {
-                return Err("Этот узел не запущен — переподключитесь".into());
+                return Err("This node is not running — reconnect".into());
             }
-            // Instant switch: just swap the routing table.
-            s.hub.update(routing_for(&inner.state, &s.upstreams, s.direct_port));
-            self.logs.push(format!("[hub] активный узел → {name}"));
-            if s.mode == Mode::Tun {
-                // UDP goes straight from the TUN adapter to the node's engine.
-                self.restart_front(s, &inner.state.settings, Some(id)).await?;
-            }
+            s.hub.update(routing_for(&inner.state, s));
+            self.logs.push(format!("[hub] active node → {name}"));
         }
         Ok(())
     }
@@ -430,7 +475,7 @@ impl Controller {
     pub async fn set_node_engine(&self, id: &str, choice: EngineChoice) -> Result<(), String> {
         let running = {
             let mut g = self.inner.lock().await;
-            let n = g.state.nodes.iter_mut().find(|n| n.id == id).ok_or("узел не найден")?;
+            let n = g.state.nodes.iter_mut().find(|n| n.id == id).ok_or("node not found")?;
             let mut probe = n.clone();
             probe.engine = choice;
             probe.effective_engine()?;
@@ -439,7 +484,7 @@ impl Controller {
             g.session.is_some()
         };
         if running {
-            self.logs.push("[hub] ядро узла изменено — перезапуск движков");
+            self.logs.push("[hub] node engine changed — restarting engines");
             self.disconnect().await;
             self.connect().await?;
         }
@@ -453,10 +498,12 @@ impl Controller {
         g.state.rules = rules;
         g.state.settings.final_target = final_target;
         self.save(&g.state);
+        let geo = if g.session.is_some() { Some(self.load_geo(&g.state.rules)) } else { None };
         let inner = &mut *g;
-        if let Some(s) = &inner.session {
-            s.hub.update(routing_for(&inner.state, &s.upstreams, s.direct_port));
-            self.logs.push("[hub] правила применены");
+        if let (Some(s), Some(geo)) = (inner.session.as_mut(), geo) {
+            s.geo = geo;
+            s.hub.update(routing_for(&inner.state, s));
+            self.logs.push("[hub] rules applied");
         }
     }
 
@@ -471,10 +518,14 @@ impl Controller {
             self.save(&g.state);
             let inner = &mut *g;
             if let Some(s) = &inner.session {
-                s.hub.update(routing_for(&inner.state, &s.upstreams, s.direct_port));
+                s.hub.update(routing_for(&inner.state, s));
             }
             inner.session.is_some()
-                && (old.mode != new.mode || old.listen_port != new.listen_port || old.block_quic != new.block_quic)
+                && (old.mode != new.mode
+                    || old.listen_port != new.listen_port
+                    || old.block_quic != new.block_quic
+                    || old.tun_stack != new.tun_stack
+                    || old.direct_dns != new.direct_dns)
         };
         if restart {
             self.disconnect().await;
@@ -487,7 +538,7 @@ impl Controller {
 
     async fn spawn_engine(&self, kind: EngineKind, slots: &[Slot]) -> Result<EngineProcess, String> {
         let exe = engines::find(kind).ok_or_else(|| {
-            format!("{} не найден: положите {} в папку engines (scripts\\get-engines.ps1)", kind.label(), kind.exe_name())
+            format!("{} not found: put {} into the engines folder (scripts\\get-engines.ps1)", kind.label(), kind.exe_name())
         })?;
         let cfg = engines::compile(kind, slots)?;
         let path = self.write_config(kind.slug(), &cfg)?;
@@ -508,11 +559,11 @@ impl Controller {
         for n in nodes {
             match n.effective_engine() {
                 Ok(k) => plan.push((n.clone(), k)),
-                Err(e) => self.logs.push(format!("[hub] «{}» пропущен: {e}", n.name)),
+                Err(e) => self.logs.push(format!("[hub] '{}' skipped: {e}", n.name)),
             }
         }
         if plan.is_empty() {
-            return Err("Ни один узел не поддерживается доступными ядрами".into());
+            return Err("No node is supported by the available engines".into());
         }
         let ports = process::alloc_ports(plan.len())?;
         let mut groups: HashMap<EngineKind, Vec<Slot>> = HashMap::new();
@@ -542,50 +593,32 @@ impl Controller {
         Ok((procs, upstreams))
     }
 
-    async fn start_front(
-        &self,
-        hub_port: u16,
-        direct_port: u16,
-        udp_port: Option<u16>,
-        domains: &[String],
-        settings: &Settings,
-    ) -> Result<EngineProcess, String> {
-        let exe = engines::find(EngineKind::Singbox).ok_or("Для TUN-режима нужен sing-box в папке engines")?;
+    async fn start_front(&self, hub_port: u16, direct_port: u16, domains: &[String], settings: &Settings) -> Result<EngineProcess, String> {
+        let exe = engines::find(EngineKind::Singbox).ok_or("TUN mode needs sing-box in the engines folder")?;
         let mut procs: Vec<String> = vec![EngineKind::Xray.exe_name().into(), EngineKind::Singbox.exe_name().into()];
         if let Some(name) = std::env::current_exe().ok().and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned())) {
             procs.push(name);
         }
         let dns = if settings.direct_dns.trim().is_empty() { "8.8.8.8" } else { settings.direct_dns.trim() };
-        let cfg = singbox::compile_tun(hub_port, direct_port, udp_port, &procs, domains, dns, settings.block_quic);
+        let dns = dns.split(':').next().unwrap_or("8.8.8.8");
+        let cfg = singbox::compile_tun(hub_port, direct_port, &procs, domains, dns, settings.block_quic);
         let path = self.write_config("tun", &cfg)?;
         let mut p = EngineProcess::spawn(EngineKind::Singbox, "tun", &exe, &path, self.logs.clone()).await?;
         if let Err(e) = p.wait_ports(&[direct_port], Duration::from_secs(8)).await {
             tokio::time::sleep(Duration::from_millis(250)).await;
-            let msg = self.engine_error(format!("TUN-адаптер не запустился: {e}"), "sing-box/tun");
+            let msg = self.engine_error(format!("TUN adapter failed to start: {e}"), "sing-box/tun");
             p.stop().await;
             return Err(msg);
         }
-        // Give the interface and routes a moment, fail fast if it dies.
         for _ in 0..10 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             if let Some(st) = p.exited() {
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                return Err(self.engine_error(format!("TUN-адаптер завершился ({st})"), "sing-box/tun"));
+                return Err(self.engine_error(format!("TUN adapter exited ({st})"), "sing-box/tun"));
             }
         }
-        self.logs.push("[hub] TUN-интерфейс «Mosaic» поднят");
+        self.logs.push("[hub] TUN interface 'Mosaic' is up (sing-box adapter)");
         Ok(p)
-    }
-
-    async fn restart_front(&self, s: &mut Session, settings: &Settings, selected: Option<&str>) -> Result<(), String> {
-        if let Some(old) = s.front.take() {
-            old.stop().await;
-        }
-        let Some(direct_port) = s.direct_port else { return Ok(()) };
-        let udp = selected.and_then(|id| s.upstreams.get(id)).map(|u| u.port);
-        let p = self.start_front(s.hub.port, direct_port, udp, &s.server_domains, settings).await?;
-        s.front = Some(p);
-        Ok(())
     }
 
     pub async fn connect(&self) -> Result<(), String> {
@@ -594,18 +627,22 @@ impl Controller {
             return Ok(());
         }
         if g.state.nodes.is_empty() {
-            return Err("Сначала добавьте узел или подписку".into());
+            return Err("Add a node or a subscription first".into());
         }
         fix_selection(&mut g.state);
         let settings = g.state.settings.clone();
-        if settings.mode == Mode::Tun && !self.admin {
-            return Err("TUN-режим требует запуска Mosaic от имени администратора".into());
+        let tun = settings.mode == Mode::Tun;
+        if tun && !self.admin {
+            return Err("TUN mode requires running Mosaic as administrator".into());
         }
-        self.logs.push("[hub] подключение…");
+        if tun && settings.tun_stack == TunStack::Native && !cfg!(feature = "native-tun") {
+            return Err("This build has no native TUN stack. Switch the TUN stack to sing-box in Settings, or use the build with the native-tun feature.".into());
+        }
+        self.logs.push("[hub] connecting…");
         let nodes = g.state.nodes.clone();
         let (engine_procs, upstreams) = self.start_engines(&nodes).await?;
         let selected = g.state.selected.clone();
-        let direct_port = if settings.mode == Mode::Tun {
+        let direct_port = if tun && settings.tun_stack == TunStack::Singbox {
             match process::alloc_ports(1) {
                 Ok(p) => Some(p[0]),
                 Err(e) => {
@@ -618,54 +655,68 @@ impl Controller {
         } else {
             None
         };
-        let routing = routing_for(&g.state, &upstreams, direct_port);
-        let hub = match Hub::start(settings.listen_port, routing, self.stats.clone(), self.logs.clone()).await {
-            Ok(h) => h,
-            Err(e) => {
-                for p in engine_procs {
-                    p.stop().await;
+        // In TUN modes the OS resolver would answer with fake IPs: use plain DNS.
+        let resolver = Arc::new(if tun { Resolver::udp_from_setting(&settings.direct_dns) } else { Resolver::system() });
+        let geo = self.load_geo(&g.state.rules);
+        let draft = Session {
+            hub: match Hub::start(
+                settings.listen_port,
+                Routing::basic(Vec::new(), "block"),
+                self.stats.clone(),
+                self.logs.clone(),
+            )
+            .await
+            {
+                Ok(h) => h,
+                Err(e) => {
+                    for p in engine_procs {
+                        p.stop().await;
+                    }
+                    return Err(e);
                 }
-                return Err(e);
-            }
-        };
-        let mut s = Session {
-            hub,
+            },
             engines: engine_procs,
             front: None,
+            #[cfg(feature = "native-tun")]
+            native: None,
             upstreams,
             mode: settings.mode,
+            tun_stack: settings.tun_stack,
             system_proxy: false,
             started_ms: now_ms(),
             direct_port,
-            server_domains: server_domains(&nodes),
+            geo,
+            resolver,
         };
+        let mut s = draft;
+        s.hub.update(routing_for(&g.state, &s));
         if let Some(id) = &selected {
             if !s.upstreams.contains_key(id) {
-                self.logs.push("[hub] выбранный узел не запустился — трафик через «proxy» будет блокироваться");
+                self.logs.push("[hub] the selected node did not start — 'proxy' traffic will be blocked");
             }
         }
-        let res: Result<(), String> = match settings.mode {
-            Mode::SystemProxy => match sys::set_system_proxy(settings.listen_port) {
+        let res: Result<(), String> = match (settings.mode, settings.tun_stack) {
+            (Mode::SystemProxy, _) => match sys::set_system_proxy(settings.listen_port) {
                 Ok(true) => {
                     s.system_proxy = true;
                     g.state.proxy_dirty = true;
                     self.save(&g.state);
-                    self.logs.push(format!("[hub] системный прокси → 127.0.0.1:{}", settings.listen_port));
+                    self.logs.push(format!("[hub] system proxy → 127.0.0.1:{}", settings.listen_port));
                     Ok(())
                 }
                 Ok(false) => {
                     self.logs.push(format!(
-                        "[hub] на этой ОС системный прокси не настраивается автоматически; используйте 127.0.0.1:{}",
+                        "[hub] the system proxy is not set automatically on this OS; use 127.0.0.1:{}",
                         settings.listen_port
                     ));
                     Ok(())
                 }
-                Err(e) => Err(format!("Не удалось включить системный прокси: {e}")),
+                Err(e) => Err(format!("Could not enable the system proxy: {e}")),
             },
-            Mode::Tun => {
-                let udp = selected.as_ref().and_then(|id| s.upstreams.get(id)).map(|u| u.port);
+            (Mode::Tun, TunStack::Singbox) => {
                 let dp = direct_port.unwrap_or(0);
-                match self.start_front(s.hub.port, dp, udp, &s.server_domains, &settings).await {
+                let domains = server_domains(&nodes);
+                match self.start_front(s.hub.port, dp, &domains, &settings).await {
                     Ok(p) => {
                         s.front = Some(p);
                         Ok(())
@@ -673,23 +724,53 @@ impl Controller {
                     Err(e) => Err(e),
                 }
             }
+            (Mode::Tun, TunStack::Native) => self.start_native(&mut s, &nodes).await,
         };
         if let Err(e) = res {
             self.teardown(s).await;
             return Err(e);
         }
         self.stats.clear_closed();
-        self.logs.push("[hub] подключено");
+        self.logs.push("[hub] connected");
         g.session = Some(s);
         Ok(())
     }
 
+    #[cfg(feature = "native-tun")]
+    async fn start_native(&self, s: &mut Session, nodes: &[Node]) -> Result<(), String> {
+        let params = crate::tun_native::NativeParams {
+            server_domains: server_domains(nodes),
+            server_ips: nodes.iter().filter_map(|n| n.server.parse().ok()).collect(),
+            resolver: s.resolver.clone(),
+            routing: s.hub.shared(),
+            stats: self.stats.clone(),
+            logs: self.logs.clone(),
+        };
+        let t = crate::tun_native::NativeTun::start(params).await?;
+        s.native = Some(t);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "native-tun"))]
+    async fn start_native(&self, _s: &mut Session, _nodes: &[Node]) -> Result<(), String> {
+        Err("This build has no native TUN stack".into())
+    }
+
     async fn teardown(&self, s: Session) {
-        let Session { hub, engines, front, system_proxy, .. } = s;
+        #[cfg(feature = "native-tun")]
+        let native = s.native;
+        let hub = s.hub;
+        let engines = s.engines;
+        let front = s.front;
+        let system_proxy = s.system_proxy;
         if system_proxy {
             if let Err(e) = sys::unset_system_proxy() {
-                self.logs.push(format!("[hub] не удалось выключить системный прокси: {e}"));
+                self.logs.push(format!("[hub] could not disable the system proxy: {e}"));
             }
+        }
+        #[cfg(feature = "native-tun")]
+        if let Some(t) = native {
+            t.stop().await;
         }
         if let Some(f) = front {
             f.stop().await;
@@ -704,7 +785,7 @@ impl Controller {
         let mut g = self.inner.lock().await;
         if let Some(s) = g.session.take() {
             self.teardown(s).await;
-            self.logs.push("[hub] отключено");
+            self.logs.push("[hub] disconnected");
         }
         if g.state.proxy_dirty {
             g.state.proxy_dirty = false;
@@ -754,7 +835,7 @@ impl Controller {
         let mut g = self.inner.lock().await;
         for n in &nodes {
             if !upstreams.contains_key(&n.id) {
-                let why = n.effective_engine().err().unwrap_or_else(|| "ядро не запустилось".into());
+                let why = n.effective_engine().err().unwrap_or_else(|| "engine did not start".into());
                 g.latency.insert(n.id.clone(), Latency { ms: None, error: Some(why), at_ms: now });
             }
         }

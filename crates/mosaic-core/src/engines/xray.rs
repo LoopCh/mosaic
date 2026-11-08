@@ -72,7 +72,7 @@ fn outbound(n: &Node) -> Result<Value, String> {
             "settings": { "servers": [{ "address": n.server, "port": n.port, "method": method, "password": password }] },
             "streamSettings": stream
         }),
-        other => return Err(format!("Xray не поддерживает {}", other.name())),
+        other => return Err(format!("Xray does not support {}", other.name())),
     };
     Ok(ob)
 }

@@ -248,7 +248,7 @@ impl Node {
             return if self.supports(k) {
                 Ok(k)
             } else {
-                Err(format!("{} не поддерживает {}", k.label(), self.summary()))
+                Err(format!("{} does not support {}", k.label(), self.summary()))
             };
         }
         // Xray is the reference implementation for the V2Ray family;
@@ -262,7 +262,7 @@ impl Node {
         order
             .into_iter()
             .find(|k| self.supports(*k))
-            .ok_or_else(|| format!("ни одно ядро не поддерживает {}", self.summary()))
+            .ok_or_else(|| format!("no engine supports {}", self.summary()))
     }
 }
 
@@ -276,6 +276,10 @@ pub enum RuleKind {
     DomainKeyword,
     IpCidr,
     Port,
+    /// Country code or list from geoip.dat ("us", "de", "private" …).
+    Geoip,
+    /// Category from geosite.dat ("category-ads-all", "google" …).
+    Geosite,
 }
 
 impl RuleKind {
@@ -286,7 +290,14 @@ impl RuleKind {
             RuleKind::DomainKeyword => "domain_keyword",
             RuleKind::IpCidr => "ip_cidr",
             RuleKind::Port => "port",
+            RuleKind::Geoip => "geoip",
+            RuleKind::Geosite => "geosite",
         }
+    }
+
+    /// Rules of this kind can only match when the destination IP is known.
+    pub fn needs_ip(self) -> bool {
+        matches!(self, RuleKind::IpCidr | RuleKind::Geoip)
     }
 }
 
@@ -315,6 +326,28 @@ pub enum Mode {
     Tun,
 }
 
+/// How IP-based rules treat domain destinations.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DomainStrategy {
+    /// Never resolve: IP rules only see connections made to an IP.
+    #[default]
+    AsIs,
+    /// If no rule matched by domain, resolve and try the IP rules again.
+    IpIfNonMatch,
+}
+
+/// Which implementation provides TUN mode.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TunStack {
+    /// sing-box as the TUN adapter, routing still in the hub (stable).
+    #[default]
+    Singbox,
+    /// Mosaic's own TUN stack (experimental, needs the `native-tun` build).
+    Native,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -326,6 +359,10 @@ pub struct Settings {
     pub user_agent: String,
     /// Plain DNS used in TUN mode for node server names and direct traffic.
     pub direct_dns: String,
+    pub domain_strategy: DomainStrategy,
+    pub tun_stack: TunStack,
+    /// "auto", "en", "ru" … — used only by the UI.
+    pub ui_language: String,
 }
 
 impl Default for Settings {
@@ -338,6 +375,9 @@ impl Default for Settings {
             test_url: "http://www.gstatic.com/generate_204".into(),
             user_agent: "Mosaic/0.1 (v2rayN-compatible)".into(),
             direct_dns: "8.8.8.8".into(),
+            domain_strategy: DomainStrategy::AsIs,
+            tun_stack: TunStack::Singbox,
+            ui_language: "auto".into(),
         }
     }
 }

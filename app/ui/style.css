@@ -215,3 +215,11 @@ select { cursor: pointer; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #262b3b; border-radius: 10px; border: 2px solid var(--bg); }
+
+/* ---------- 0.2 additions */
+.country { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 12px; flex-wrap: wrap; }
+.country select { min-width: 260px; }
+.country .muted { flex-basis: 100%; line-height: 1.45; }
+.geo-status { margin-top: 14px; }
+.net { font-size: 10px; font-weight: 700; color: var(--warn); background: rgba(251, 191, 36, .12); padding: 2px 5px; border-radius: 6px; margin-right: 4px; }
+.form select { width: 100%; }

@@ -79,7 +79,7 @@ fn transport(n: &Node) -> Result<Option<Value>, String> {
         }
         Transport::Grpc { service_name } => Some(json!({ "type": "grpc", "service_name": service_name })),
         Transport::Httpupgrade { path, host } => Some(json!({ "type": "httpupgrade", "path": path, "host": host })),
-        Transport::Xhttp { .. } => return Err("sing-box не поддерживает XHTTP — выберите Xray".into()),
+        Transport::Xhttp { .. } => return Err("sing-box does not support XHTTP — use Xray".into()),
     })
 }
 
@@ -150,10 +150,9 @@ fn outbound(n: &Node) -> Result<Value, String> {
     Ok(ob)
 }
 
-/// Temporary TUN adapter for the MVP: sing-box owns the TUN interface and
-/// fake-ip DNS, and hands every TCP connection to the hub's SOCKS inbound,
-/// so routing decisions stay in the hub. Will be replaced by a native
-/// Rust TUN stack inside the hub.
+/// TUN adapter: sing-box owns the TUN interface and fake-ip DNS and hands
+/// every TCP connection and UDP flow to the hub's SOCKS inbound, so routing
+/// decisions stay in the hub. The native TUN stack is the long-term replacement.
 ///
 /// DNS on Windows is done by the system DNS Client service, so lookups made
 /// by the engines themselves also arrive here as hijacked DNS. Node server
@@ -163,7 +162,6 @@ fn outbound(n: &Node) -> Result<Value, String> {
 pub fn compile_tun(
     hub_port: u16,
     direct_port: u16,
-    udp_port: Option<u16>,
     exclude_processes: &[String],
     server_domains: &[String],
     direct_dns: &str,
@@ -182,11 +180,6 @@ pub fn compile_tun(
     if block_quic {
         rules.push(json!({ "network": "udp", "port": 443, "action": "reject" }));
     }
-    rules.push(json!({ "network": "udp", "outbound": "udp-out" }));
-    let udp_out = match udp_port {
-        Some(p) => json!({ "type": "socks", "tag": "udp-out", "server": "127.0.0.1", "server_port": p, "version": "5" }),
-        None => json!({ "type": "direct", "tag": "udp-out" }),
-    };
     let mut dns_rules = Vec::new();
     if !server_domains.is_empty() {
         dns_rules.push(json!({ "domain": server_domains, "server": "direct-dns" }));
@@ -213,7 +206,6 @@ pub fn compile_tun(
         ],
         "outbounds": [
             { "type": "socks", "tag": "hub", "server": "127.0.0.1", "server_port": hub_port, "version": "5" },
-            udp_out,
             { "type": "direct", "tag": "direct" }
         ],
         "route": {

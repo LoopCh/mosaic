@@ -45,7 +45,7 @@ impl EngineProcess {
             // CREATE_NO_WINDOW: no console flashing for engine processes.
             cmd.creation_flags(0x0800_0000);
         }
-        let mut child = cmd.spawn().map_err(|e| format!("не удалось запустить {}: {e}", exe.display()))?;
+        let mut child = cmd.spawn().map_err(|e| format!("cannot start {}: {e}", exe.display()))?;
         let tag = Self::tag(kind, role);
         if let Some(out) = child.stdout.take() {
             pump(out, tag.clone(), logs.clone());
@@ -53,7 +53,7 @@ impl EngineProcess {
         if let Some(err) = child.stderr.take() {
             pump(err, tag.clone(), logs.clone());
         }
-        logs.push(format!("[hub] запущен {tag} (pid {})", child.id().unwrap_or(0)));
+        logs.push(format!("[hub] started {tag} (pid {})", child.id().unwrap_or(0)));
         Ok(Self { kind, role, pid: child.id(), child })
     }
 
@@ -75,13 +75,13 @@ impl EngineProcess {
         for &p in ports {
             loop {
                 if let Some(st) = self.exited() {
-                    return Err(format!("{} завершился сразу после запуска ({st})", self.kind.label()));
+                    return Err(format!("{} exited right after start ({st})", self.kind.label()));
                 }
                 if TcpStream::connect(("127.0.0.1", p)).await.is_ok() {
                     break;
                 }
                 if Instant::now() > deadline {
-                    return Err(format!("{} не открыл порт {p} за {} с", self.kind.label(), timeout.as_secs()));
+                    return Err(format!("{} did not open port {p} within {} s", self.kind.label(), timeout.as_secs()));
                 }
                 tokio::time::sleep(Duration::from_millis(80)).await;
             }
@@ -104,7 +104,7 @@ pub fn alloc_ports(n: usize) -> Result<Vec<u16>, String> {
     let mut hold = Vec::with_capacity(n);
     let mut ports = Vec::with_capacity(n);
     for _ in 0..n {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("нет свободного порта: {e}"))?;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("no free port: {e}"))?;
         ports.push(l.local_addr().map_err(|e| e.to_string())?.port());
         hold.push(l);
     }

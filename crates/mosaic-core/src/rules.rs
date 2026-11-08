@@ -1,7 +1,9 @@
 //! Rule matching. Rules are checked top to bottom; first match wins.
 
+use std::collections::HashSet;
 use std::net::IpAddr;
 
+use crate::geo::GeoData;
 use crate::model::{Rule, RuleKind};
 
 pub const PRIVATE_CIDRS: &str =
@@ -14,8 +16,25 @@ pub fn default_rules() -> Vec<Rule> {
     ]
 }
 
-/// `host` must already be lower-case. `ip` is `host` parsed as an IP, if it is one.
-pub fn matches(rule: &Rule, host: &str, ip: Option<IpAddr>, port: u16) -> bool {
+/// geoip / geosite codes referenced by enabled rules (lower-case).
+pub fn geo_codes(rules: &[Rule]) -> (HashSet<String>, HashSet<String>) {
+    let (mut ip, mut site) = (HashSet::new(), HashSet::new());
+    for r in rules.iter().filter(|r| r.enabled) {
+        let set = match r.kind {
+            RuleKind::Geoip => &mut ip,
+            RuleKind::Geosite => &mut site,
+            _ => continue,
+        };
+        for v in r.value.split(',').map(|v| v.trim()).filter(|v| !v.is_empty()) {
+            set.insert(v.split('@').next().unwrap_or(v).to_ascii_lowercase());
+        }
+    }
+    (ip, site)
+}
+
+/// `host` must already be lower-case. `ip` is the destination IP if known
+/// (the host itself, or a resolved address).
+pub fn matches(rule: &Rule, host: &str, ip: Option<IpAddr>, port: u16, geo: &GeoData) -> bool {
     rule.value
         .split(',')
         .map(|v| v.trim())
@@ -29,6 +48,8 @@ pub fn matches(rule: &Rule, host: &str, ip: Option<IpAddr>, port: u16) -> bool {
             RuleKind::DomainKeyword => host.contains(&v.to_ascii_lowercase()),
             RuleKind::IpCidr => ip.map_or(false, |ip| cidr_contains(v, ip)),
             RuleKind::Port => port_match(v, port),
+            RuleKind::Geoip => ip.map_or(false, |ip| geo.ip_contains(v, ip)),
+            RuleKind::Geosite => geo.site_contains(v, host),
         })
 }
 
@@ -82,32 +103,35 @@ mod tests {
 
     #[test]
     fn suffix() {
+        let g = GeoData::default();
         let rule = r(RuleKind::DomainSuffix, ".ru, xn--p1ai");
-        assert!(matches(&rule, "yandex.ru", None, 443));
-        assert!(matches(&rule, "ru", None, 443));
-        assert!(matches(&rule, "xn--80ak6aa92e.xn--p1ai", None, 443));
-        assert!(!matches(&rule, "guru", None, 443));
-        assert!(!matches(&rule, "example.com", None, 443));
+        assert!(matches(&rule, "yandex.ru", None, 443, &g));
+        assert!(matches(&rule, "ru", None, 443, &g));
+        assert!(matches(&rule, "xn--80ak6aa92e.xn--p1ai", None, 443, &g));
+        assert!(!matches(&rule, "guru", None, 443, &g));
+        assert!(!matches(&rule, "example.com", None, 443, &g));
     }
 
     #[test]
     fn cidr_and_port() {
+        let g = GeoData::default();
         let rule = r(RuleKind::IpCidr, PRIVATE_CIDRS);
-        assert!(matches(&rule, "192.168.1.10", "192.168.1.10".parse().ok(), 80));
-        assert!(matches(&rule, "fd12::1", "fd12::1".parse().ok(), 80));
-        assert!(!matches(&rule, "8.8.8.8", "8.8.8.8".parse().ok(), 80));
-        assert!(!matches(&rule, "example.com", None, 80));
+        assert!(matches(&rule, "192.168.1.10", "192.168.1.10".parse().ok(), 80, &g));
+        assert!(matches(&rule, "fd12::1", "fd12::1".parse().ok(), 80, &g));
+        assert!(!matches(&rule, "8.8.8.8", "8.8.8.8".parse().ok(), 80, &g));
+        assert!(!matches(&rule, "example.com", None, 80, &g));
         assert!(cidr_contains("0.0.0.0/0", "1.2.3.4".parse().unwrap()));
         let p = r(RuleKind::Port, "22, 6000-7000");
-        assert!(matches(&p, "x", None, 22));
-        assert!(matches(&p, "x", None, 6500));
-        assert!(!matches(&p, "x", None, 443));
+        assert!(matches(&p, "x", None, 22, &g));
+        assert!(matches(&p, "x", None, 6500, &g));
+        assert!(!matches(&p, "x", None, 443, &g));
     }
 
     #[test]
     fn keyword_and_exact() {
-        assert!(matches(&r(RuleKind::DomainKeyword, "google"), "www.google.com", None, 1));
-        assert!(matches(&r(RuleKind::Domain, "Example.com"), "example.com", None, 1));
-        assert!(!matches(&r(RuleKind::Domain, "example.com"), "a.example.com", None, 1));
+        let g = GeoData::default();
+        assert!(matches(&r(RuleKind::DomainKeyword, "google"), "www.google.com", None, 1, &g));
+        assert!(matches(&r(RuleKind::Domain, "Example.com"), "example.com", None, 1, &g));
+        assert!(!matches(&r(RuleKind::Domain, "example.com"), "a.example.com", None, 1, &g));
     }
 }

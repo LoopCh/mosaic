@@ -35,7 +35,7 @@ pub fn parse_text(text: &str) -> ImportResult {
                 &decoded
             }
             _ => {
-                res.errors.push("не похоже ни на ссылки, ни на base64-подписку".into());
+                res.errors.push("not share links and not a base64 subscription".into());
                 return res;
             }
         }
@@ -72,8 +72,8 @@ pub fn parse_link(link: &str) -> Result<Node, String> {
         "hy2" | "hysteria2" => parse_hy2(link),
         "tuic" => parse_tuic(link),
         "wireguard" | "wg" => parse_wg_link(link),
-        "" => Err("нет схемы".into()),
-        other => Err(format!("схема {other}:// пока не поддерживается")),
+        "" => Err("no scheme".into()),
+        other => Err(format!("{other}:// links are not supported yet")),
     }
 }
 
@@ -131,26 +131,26 @@ fn parse_query(q: &str) -> Vec<(String, String)> {
 
 pub(crate) fn split_host_port(s: &str) -> Result<(String, u16), String> {
     let (host, port_s) = if let Some(r) = s.strip_prefix('[') {
-        let (h, p) = r.split_once(']').ok_or("плохой IPv6-адрес")?;
+        let (h, p) = r.split_once(']').ok_or("bad IPv6 address")?;
         (h.to_string(), p.trim_start_matches(':'))
     } else {
-        let (h, p) = s.rsplit_once(':').ok_or("нет порта")?;
+        let (h, p) = s.rsplit_once(':').ok_or("no port")?;
         (h.to_string(), p)
     };
     // Port ranges like "443,20000-30000" (Hysteria2 port hopping): take the first port.
     let digits: String = port_s.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let port: u16 = digits.parse().map_err(|_| format!("плохой порт «{port_s}»"))?;
+    let port: u16 = digits.parse().map_err(|_| format!("bad port '{port_s}'"))?;
     if host.is_empty() {
-        return Err("пустой адрес сервера".into());
+        return Err("empty server address".into());
     }
     if port == 0 {
-        return Err("порт 0".into());
+        return Err("port 0".into());
     }
     Ok((host, port))
 }
 
 fn parse_url(link: &str) -> Result<Url, String> {
-    let (_, rest) = link.split_once("://").ok_or("нет схемы")?;
+    let (_, rest) = link.split_once("://").ok_or("no scheme")?;
     let (rest, name) = match rest.split_once('#') {
         Some((a, b)) => (a, pct_decode(b)),
         None => (rest, String::new()),
@@ -185,7 +185,7 @@ fn transport_from(u: &Url) -> Result<Transport, String> {
     Ok(match t.as_str() {
         "" | "tcp" | "raw" => {
             if u.q("headerType").eq_ignore_ascii_case("http") {
-                return Err("tcp с HTTP-обфускацией пока не поддерживается".into());
+                return Err("tcp with HTTP header obfuscation is not supported yet".into());
             }
             Transport::Tcp
         }
@@ -193,7 +193,7 @@ fn transport_from(u: &Url) -> Result<Transport, String> {
         "grpc" | "gun" => Transport::Grpc { service_name: u.q_any(&["serviceName", "service_name", "path"]) },
         "httpupgrade" => Transport::Httpupgrade { path: or_slash(u.q("path")), host: u.q("host") },
         "xhttp" | "splithttp" => Transport::Xhttp { path: or_slash(u.q("path")), host: u.q("host"), mode: u.q("mode") },
-        other => return Err(format!("транспорт «{other}» пока не поддерживается")),
+        other => return Err(format!("transport '{other}' is not supported yet")),
     })
 }
 
@@ -246,7 +246,7 @@ fn node(link: &str, name: String, server: String, port: u16, protocol: Protocol,
 fn parse_vless(link: &str) -> Result<Node, String> {
     let u = parse_url(link)?;
     if u.user.is_empty() {
-        return Err("нет UUID".into());
+        return Err("no UUID".into());
     }
     let p = Protocol::Vless { uuid: u.user.clone(), flow: u.q("flow") };
     Ok(node(link, u.display_name(), u.host.clone(), u.port, p, transport_from(&u)?, security_from(&u, false)))
@@ -255,7 +255,7 @@ fn parse_vless(link: &str) -> Result<Node, String> {
 fn parse_trojan(link: &str) -> Result<Node, String> {
     let u = parse_url(link)?;
     if u.user.is_empty() {
-        return Err("нет пароля".into());
+        return Err("no password".into());
     }
     let p = Protocol::Trojan { password: u.user.clone() };
     Ok(node(link, u.display_name(), u.host.clone(), u.port, p, transport_from(&u)?, security_from(&u, true)))
@@ -270,7 +270,7 @@ fn js(v: &serde_json::Value, k: &str) -> String {
 }
 
 fn parse_vmess(link: &str) -> Result<Node, String> {
-    let (_, payload) = link.split_once("://").ok_or("нет схемы")?;
+    let (_, payload) = link.split_once("://").ok_or("no scheme")?;
     let payload = payload.split('#').next().unwrap_or(payload).trim();
     let json = b64::decode_str(payload).and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
     let Some(v) = json else {
@@ -280,10 +280,10 @@ fn parse_vmess(link: &str) -> Result<Node, String> {
         return Ok(node(link, u.display_name(), u.host.clone(), u.port, p, transport_from(&u)?, security_from(&u, false)));
     };
     let server = js(&v, "add");
-    let port: u16 = js(&v, "port").parse().map_err(|_| "плохой порт в vmess")?;
+    let port: u16 = js(&v, "port").parse().map_err(|_| "bad port in vmess")?;
     let uuid = js(&v, "id");
     if server.is_empty() || uuid.is_empty() {
-        return Err("в vmess нет адреса или id".into());
+        return Err("vmess link has no address or id".into());
     }
     let net = js(&v, "net").to_ascii_lowercase();
     let path = js(&v, "path");
@@ -291,7 +291,7 @@ fn parse_vmess(link: &str) -> Result<Node, String> {
     let transport = match net.as_str() {
         "" | "tcp" | "raw" => {
             if js(&v, "type").eq_ignore_ascii_case("http") {
-                return Err("tcp с HTTP-обфускацией пока не поддерживается".into());
+                return Err("tcp with HTTP header obfuscation is not supported yet".into());
             }
             Transport::Tcp
         }
@@ -299,7 +299,7 @@ fn parse_vmess(link: &str) -> Result<Node, String> {
         "grpc" => Transport::Grpc { service_name: path },
         "httpupgrade" => Transport::Httpupgrade { path: or_slash(path), host },
         "xhttp" | "splithttp" => Transport::Xhttp { path: or_slash(path), host, mode: js(&v, "type") },
-        other => return Err(format!("транспорт «{other}» пока не поддерживается")),
+        other => return Err(format!("transport '{other}' is not supported yet")),
     };
     let security = if js(&v, "tls").eq_ignore_ascii_case("tls") {
         let sni = js(&v, "sni");
@@ -319,26 +319,26 @@ fn parse_vmess(link: &str) -> Result<Node, String> {
 }
 
 fn parse_ss(link: &str) -> Result<Node, String> {
-    let (_, rest) = link.split_once("://").ok_or("нет схемы")?;
+    let (_, rest) = link.split_once("://").ok_or("no scheme")?;
     let (rest, name) = match rest.split_once('#') {
         Some((a, b)) => (a, pct_decode(b)),
         None => (rest, String::new()),
     };
     let query = rest.split_once('?').map(|(_, q)| parse_query(q)).unwrap_or_default();
     if query.iter().any(|(k, v)| k == "plugin" && !v.is_empty()) {
-        return Err("Shadowsocks-плагины пока не поддерживаются".into());
+        return Err("Shadowsocks plugins are not supported yet".into());
     }
     let rest = rest.split('?').next().unwrap_or(rest).trim_end_matches('/');
     let (creds, hostport) = if let Some((userinfo, hp)) = rest.rsplit_once('@') {
         let ui = pct_decode(userinfo);
-        let creds = if ui.contains(':') { ui } else { b64::decode_str(&ui).ok_or("не удалось декодировать userinfo")? };
+        let creds = if ui.contains(':') { ui } else { b64::decode_str(&ui).ok_or("cannot decode userinfo")? };
         (creds, hp.to_string())
     } else {
-        let dec = b64::decode_str(rest).ok_or("ss-ссылка не в base64")?;
-        let (c, hp) = dec.rsplit_once('@').ok_or("нет адреса сервера")?;
+        let dec = b64::decode_str(rest).ok_or("ss link is not base64")?;
+        let (c, hp) = dec.rsplit_once('@').ok_or("no server address")?;
         (c.to_string(), hp.to_string())
     };
-    let (method, password) = creds.split_once(':').ok_or("нет метода или пароля")?;
+    let (method, password) = creds.split_once(':').ok_or("no method or password")?;
     let (server, port) = split_host_port(&hostport)?;
     let name = if name.trim().is_empty() { format!("{server}:{port}") } else { name.trim().to_string() };
     let p = Protocol::Shadowsocks { method: method.to_string(), password: password.to_string() };
@@ -364,7 +364,7 @@ fn parse_hy2(link: &str) -> Result<Node, String> {
 
 fn parse_tuic(link: &str) -> Result<Node, String> {
     let u = parse_url(link)?;
-    let (uuid, password) = u.user.split_once(':').ok_or("в tuic-ссылке нужен uuid:password")?;
+    let (uuid, password) = u.user.split_once(':').ok_or("tuic link needs uuid:password")?;
     let p = Protocol::Tuic {
         uuid: uuid.to_string(),
         password: password.to_string(),
@@ -393,11 +393,11 @@ fn with_prefix(addr: &str) -> String {
 fn parse_wg_link(link: &str) -> Result<Node, String> {
     let u = parse_url(link)?;
     if u.user.is_empty() {
-        return Err("нет приватного ключа".into());
+        return Err("no private key".into());
     }
     let peer = u.q_any(&["publickey", "public_key", "peer_public_key", "pbk"]);
     if peer.is_empty() {
-        return Err("нет публичного ключа пира".into());
+        return Err("no peer public key".into());
     }
     let p = Protocol::Wireguard {
         private_key: u.user.clone(),
@@ -437,7 +437,7 @@ pub fn parse_wg_conf(text: &str) -> Result<Node, String> {
         }
     }
     if pk.is_empty() || peer.is_empty() || endpoint.is_empty() {
-        return Err("нужны PrivateKey, PublicKey и Endpoint".into());
+        return Err("PrivateKey, PublicKey and Endpoint are required".into());
     }
     let (server, port) = split_host_port(&endpoint)?;
     let seed = format!("wg:{pk}:{peer}:{endpoint}");
@@ -460,9 +460,9 @@ mod tests {
 
     #[test]
     fn vless_reality() {
-        let l = "vless://11111111-2222-3333-4444-555555555555@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=abcDEF_123-x&sid=6ba85179e30d4fc2&type=tcp#%D0%A4%D0%B8%D0%BD%D0%BB%D1%8F%D0%BD%D0%B4%D0%B8%D1%8F";
+        let l = "vless://11111111-2222-3333-4444-555555555555@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=abcDEF_123-x&sid=6ba85179e30d4fc2&type=tcp#%F0%9F%87%AB%F0%9F%87%AE%20Helsinki";
         let n = parse_link(l).unwrap();
-        assert_eq!(n.name, "Финляндия");
+        assert_eq!(n.name, "🇫🇮 Helsinki");
         assert_eq!(n.server, "example.com");
         assert_eq!(n.port, 443);
         assert!(matches!(n.protocol, Protocol::Vless { ref flow, .. } if flow == "xtls-rprx-vision"));

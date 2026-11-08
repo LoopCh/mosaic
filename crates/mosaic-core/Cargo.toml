@@ -10,3 +10,14 @@ tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "net", "io-
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = "2.10"
+
+# Experimental native TUN stack (Windows first). Off by default so the stable
+# build never depends on it: cargo build --features mosaic-core/native-tun
+ipstack = { version = "1.0", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+wintun = { version = "0.5", optional = true }
+
+[features]
+default = []
+native-tun = ["dep:ipstack", "dep:wintun"]

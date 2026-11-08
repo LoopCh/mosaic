@@ -7,3 +7,6 @@ license = "GPL-3.0-or-later"
 [dependencies]
 mosaic-core = { path = "../mosaic-core" }
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "time"] }
+
+[features]
+native-tun = ["mosaic-core/native-tun"]

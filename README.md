@@ -1,98 +1,104 @@
-# Mosaic — MVP 0.1 (Windows)
+# Mosaic 0.2
 
-Мультиядерный VPN-клиент: маршрутизацией, статистикой и выбором узла управляет
-собственный hub на Rust, а Xray и sing-box работают как взаимозаменяемые движки.
-Подробный дизайн — в дизайн-документе.
+A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
+live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
+that only carry traffic to servers. Rules can send different traffic to nodes on
+different engines at the same time.
 
-## Что умеет MVP
+Interface languages: English, Русский (automatic, switchable in Settings).
 
-- Импорт: `vless://`, `vmess://`, `trojan://`, `ss://`, `hy2://`/`hysteria2://`, `tuic://`,
-  `wireguard://`, base64-подписки, https-подписки, WireGuard `.conf`.
-- Автовыбор ядра по матрице возможностей (Xray для VLESS/VMess/Trojan и XHTTP,
-  sing-box для Hysteria2/TUIC/WireGuard/SS) и ручной выбор ядра на каждом узле.
-- Один процесс на ядро и SOCKS-вход на каждый узел, поэтому узел переключается мгновенно, без переподключения.
-- Правила (домен, суффикс, ключевое слово, IP/подсеть, порт) с целью «выбранный узел /
-  напрямую / блок / **конкретный узел**». Узлы на разных ядрах можно смешивать.
-- Режимы: **системный прокси** (без прав администратора) и **TUN** (весь трафик, нужны права
-  администратора; в MVP TUN-адаптером временно служит sing-box).
-- Экран «Соединения»: для каждого соединения видно сработавшее правило, узел и ядро.
-- Тест задержки всех узлов, логи ядер, автосброс системного прокси после сбоя.
+## What's new in 0.2
 
-## Быстрый старт
+- **UDP through the hub** (SOCKS5 UDP ASSOCIATE): UDP follows the same rules as TCP.
+  In TUN mode, switching nodes is now instant and no longer restarts the TUN adapter.
+- **GeoIP / Geosite rules** using the standard `geoip.dat` / `geosite.dat`
+  (read by a built-in parser, only the codes your rules use are loaded).
+- **Country-neutral presets:** “My country direct” for any country (its domain zone
+  + GeoIP), “Block ads” (`geosite:category-ads-all`).
+- **IP rules for domains:** optional “resolve if no domain rule matched” strategy.
+- **Native TUN stack (experimental, Windows):** Mosaic’s own TUN — wintun + userspace
+  TCP/IP (ipstack), built-in fake-IP DNS, TLS SNI / HTTP Host sniffing, bypass routes
+  for node servers. Shipped as a separate build so it can never break the stable one.
+- English/Russian UI, English core messages.
 
-Нужно: Windows 10/11 x64, [Rust](https://rustup.rs) (toolchain MSVC + Visual Studio Build Tools
-с компонентом «Desktop development with C++»). WebView2 уже есть в Windows 10/11.
+## Quick start (Windows)
+
+Requirements: Windows 10/11 x64, [Rust](https://rustup.rs) with the MSVC toolchain
+(Visual Studio Build Tools, “Desktop development with C++”). WebView2 ships with Windows.
 
 ```powershell
-# 1. Скачать ядра (Xray + sing-box) в .\engines
+# 1. Engines (Xray + sing-box), geoip.dat / geosite.dat and wintun.dll → .\engines
 powershell -ExecutionPolicy Bypass -File scripts\get-engines.ps1
 
-# 2. Тесты ядра логики (парсеры ссылок, правила, маршрутизация)
+# 2. Core tests
 cargo test -p mosaic-core
 
-# 3. Запустить приложение
+# 3. Run the app (stable build)
 cargo run --release -p mosaic
+
+# 3b. Or the build with the experimental native TUN
+cargo run --release -p mosaic --features mosaic-core/native-tun
 ```
 
-Для TUN-режима запустите `target\release\mosaic.exe` от имени администратора.
+TUN mode needs administrator rights: run `target\release\mosaic.exe` as administrator.
 
-### Без установки Rust
+**Without installing Rust:** push the repository to GitHub. The workflow builds two
+portable archives (Actions → Artifacts): `Mosaic-windows-x64` (stable) and
+`Mosaic-windows-x64-native-tun` (experimental).
 
-Залейте репозиторий на GitHub. Workflow `.github/workflows/windows.yml` соберёт
-портативный архив **Mosaic-windows-x64** (mosaic.exe + mosaic-cli.exe + engines) — он появится во вкладке Actions → Artifacts.
-
-### CLI для отладки
+### CLI
 
 ```powershell
-cargo run --release -p mosaic-cli -- import "vless://…"
-cargo run --release -p mosaic-cli -- sub https://example.com/sub
-cargo run --release -p mosaic-cli -- list
-cargo run --release -p mosaic-cli -- test
-cargo run --release -p mosaic-cli -- run          # системный прокси, Ctrl+C — выход
-cargo run --release -p mosaic-cli -- run --tun    # из консоли администратора
+mosaic-cli import "vless://…"      mosaic-cli sub https://example.com/sub
+mosaic-cli list                     mosaic-cli test
+mosaic-cli run                      # system proxy, Ctrl+C to quit
+mosaic-cli run --tun                # TUN via the sing-box adapter (admin console)
+mosaic-cli run --tun --native       # native TUN (native-tun build, admin console)
 ```
 
-## Чек-лист проверки
+## Test checklist for 0.2
 
-1. **Импорт.** «Узлы» → «+ Импорт» → вставить ссылки или URL подписки. У каждого узла
-   появляется бейдж ядра; в выпадающем списке неподдерживаемые ядра неактивны.
-2. **Тест задержки.** Работает и без подключения (ядра поднимаются временно).
-3. **Подключение (системный прокси).** Кнопка на «Главной». Откройте браузер:
-   на https://ifconfig.me должен быть IP сервера.
-4. **Переключение узла на лету.** Выберите другой узел, не отключаясь; новые соединения
-   пойдут через него, IP на ifconfig.me сменится.
-5. **Смешение ядер.** «Правила» → «+ Правило»: `Домен содержит` `ifconfig` → «Узел: …» на
-   другом ядре → «Применить». На «Соединениях» видно правило, узел и бейдж ядра.
-6. **«РФ напрямую».** Пресет + «Применить»; `ya.ru` в «Соединениях» идёт «напрямую».
-7. **TUN.** Запустить от администратора, переключить на «TUN · весь трафик», подключиться.
-   Проверить приложение, которое игнорирует системный прокси (например, `curl ifconfig.me` в консоли).
-8. **Выход.** Закрыть окно: системный прокси выключается, процессы xray/sing-box завершаются.
-   Если убить процесс через диспетчер задач, прокси сбросится при следующем запуске.
+1. **UDP in TUN (sing-box adapter).** Settings → TUN implementation: sing-box. Connect in TUN.
+   Open a site that uses UDP (e.g. a WebRTC/STUN test or an online game); *Connections*
+   shows `UDP` rows with rule, node and engine.
+2. **Instant switch in TUN.** Change the node while connected: no reconnect, the TUN stays up,
+   new TCP and UDP flows go through the new node.
+3. **GeoIP / Geosite.** Rules → “+ My country direct” → pick your country → Apply. A site in
+   your country’s domain zone shows the `domain_suffix` rule; with Settings → “Resolve if no
+   domain rule matched”, a site hosted in your country but under `.com` shows the `geoip` rule.
+   “+ Block ads” → `doubleclick.net` is blocked.
+4. **Native TUN (native-tun build).** Settings → TUN implementation: native → Save → connect in TUN
+   as administrator. Check `curl ifconfig.me` in a console, browsing, a UDP app, and that
+   closing the app restores normal internet.
+5. **Language.** Settings → Interface language.
 
-## Где что лежит
+If something fails: send the *Logs* tab and `%APPDATA%\Mosaic\run\*.json`.
 
-| Путь | Что |
+## Known limitations
+
+- Native TUN: Windows only; IPv4 DNS answers only (IPv6 traffic is captured but apps get IPv4);
+  if your DNS server is inside your LAN, Windows may also ask it directly and some apps will
+  connect by IP (Mosaic then routes by IP + TLS SNI sniffing for ports 80/443/8080/8443).
+- Geosite `regexp:` entries are skipped (no regex engine in the core yet).
+- System-proxy mode carries UDP only for apps that speak SOCKS5 UDP.
+- No tray/autostart yet; Linux/macOS/mobile are later stages.
+
+## Layout
+
+```
+crates/mosaic-core   hub: IR, parsers, config compilers, data plane (TCP+UDP), geo, DNS, native TUN
+crates/mosaic-cli    command-line client
+app/src-tauri        Tauri 2 shell
+app/ui               UI (HTML/CSS/JS, no bundler) + i18n.js
+scripts              engine download
+```
+
+## Где что лежит / Where things are
+
+| Path | What |
 |---|---|
-| `%APPDATA%\Mosaic\state.json` | узлы, подписки, правила, настройки |
-| `%APPDATA%\Mosaic\run\*.json` | сгенерированные конфиги ядер (полезно при отладке) |
-| `engines\` | xray.exe, sing-box.exe (ищутся рядом с exe, в `engines\` репозитория или в `%APPDATA%\Mosaic\engines`) |
+| `%APPDATA%\Mosaic\state.json` | nodes, subscriptions, rules, settings |
+| `%APPDATA%\Mosaic\run\*.json` | generated engine configs |
+| `engines\` | xray.exe, sing-box.exe, geoip.dat, geosite.dat, wintun.dll |
 
-## Структура
-
-```
-crates/mosaic-core   hub: IR, парсеры, компиляторы конфигов, data plane, контроллер
-crates/mosaic-cli    консольный клиент для отладки
-app/src-tauri        Tauri 2: команды и окно
-app/ui               интерфейс (HTML/CSS/JS без сборщика)
-scripts              загрузка ядер
-```
-
-## Известные ограничения MVP
-
-- UDP в режиме системного прокси не проксируется (как и у большинства системных прокси).
-  В TUN-режиме UDP идёт напрямую в движок выбранного узла, а QUIC (UDP/443) по умолчанию
-  блокируется, чтобы браузеры перешли на TCP и подчинялись правилам.
-- Правила `ip_cidr` срабатывают на соединения по IP; домены hub пока не резолвит для IP-правил.
-- В TUN-режиме смена узла перезапускает TUN-адаптер (~1 с) ради UDP; TCP переключается мгновенно.
-- Нет geosite/geoip, трея и автозапуска — это следующие шаги (см. роадмап).
-- Лицензия: GPL-3.0-or-later (sing-box и mihomo распространяются под GPL).
+License: GPL-3.0-or-later.

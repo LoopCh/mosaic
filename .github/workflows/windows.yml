@@ -5,7 +5,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  stable:
+    name: Stable build (sing-box TUN adapter)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +19,7 @@ jobs:
       - name: Build app and CLI
         run: cargo build --release -p mosaic -p mosaic-cli
 
-      - name: Download engines
+      - name: Download engines and geo files
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -30,9 +31,46 @@ jobs:
           New-Item -ItemType Directory -Force dist/Mosaic | Out-Null
           Copy-Item target/release/mosaic.exe, target/release/mosaic-cli.exe dist/Mosaic/
           Copy-Item engines dist/Mosaic/engines -Recurse
-          Copy-Item README.md dist/Mosaic/
+          Copy-Item README.md, LICENSE dist/Mosaic/ -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v4
         with:
           name: Mosaic-windows-x64
+          path: dist/Mosaic
+
+  native-tun:
+    name: Experimental build (native TUN)
+    runs-on: windows-latest
+    # Experimental: a failure here never blocks the stable build.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: native-tun
+
+      - name: Unit tests (core, native-tun)
+        run: cargo test -p mosaic-core --features native-tun
+
+      - name: Build app and CLI with native TUN
+        run: cargo build --release -p mosaic -p mosaic-cli --features mosaic-core/native-tun
+
+      - name: Download engines and geo files
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/get-engines.ps1
+
+      - name: Package portable build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/Mosaic | Out-Null
+          Copy-Item target/release/mosaic.exe, target/release/mosaic-cli.exe dist/Mosaic/
+          Copy-Item engines dist/Mosaic/engines -Recurse
+          Copy-Item README.md, LICENSE dist/Mosaic/ -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mosaic-windows-x64-native-tun
           path: dist/Mosaic

@@ -1,0 +1,12 @@
+[package]
+name = "mosaic-core"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Mosaic hub: unified config model, routing and engine orchestration"
+
+[dependencies]
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "net", "io-util", "process", "sync", "time", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "2.10"

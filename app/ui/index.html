@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mosaic</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" class="logo" aria-hidden="true">
+        <rect x="5" y="5" width="10" height="10" rx="3" fill="#7c5cff"/>
+        <rect x="17" y="5" width="10" height="10" rx="3" fill="#38bdf8"/>
+        <rect x="5" y="17" width="10" height="10" rx="3" fill="#34d399"/>
+        <rect x="17" y="17" width="10" height="10" rx="3" fill="#f472b6"/>
+      </svg>
+      <span>Mosaic</span>
+    </div>
+    <nav class="nav">
+      <button data-view="home" class="active"><svg viewBox="0 0 24 24"><path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>Главная</button>
+      <button data-view="nodes"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg>Узлы</button>
+      <button data-view="rules"><svg viewBox="0 0 24 24"><path d="M4 6h10M4 12h16M4 18h7"/><circle cx="18" cy="6" r="2"/><circle cx="15" cy="18" r="2"/></svg>Правила</button>
+      <button data-view="conns"><svg viewBox="0 0 24 24"><path d="M4 7h12l-3-3M20 17H8l3 3"/></svg>Соединения</button>
+      <button data-view="engines"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9z"/></svg>Движки</button>
+      <button data-view="logs"><svg viewBox="0 0 24 24"><path d="M5 5h14M5 10h14M5 15h9M5 20h6"/></svg>Логи</button>
+      <button data-view="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Настройки</button>
+    </nav>
+    <div class="side-foot">
+      <span class="dot" id="side-dot"></span>
+      <div>
+        <div id="side-status">Отключено</div>
+        <div class="muted small" id="side-sub">MVP 0.1 · Windows</div>
+      </div>
+    </div>
+  </aside>
+
+  <main>
+    <!-- HOME -->
+    <section class="view active" id="view-home">
+      <div class="home">
+        <div class="hero card">
+          <button class="power" id="power" title="Подключить / отключить">
+            <span class="ring"></span>
+            <svg viewBox="0 0 24 24"><path d="M12 3v8M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
+          </button>
+          <div class="hero-state" id="hero-state">Отключено</div>
+          <div class="hero-sub muted" id="hero-sub">Нажмите, чтобы подключиться</div>
+          <div class="seg" id="mode-seg">
+            <button data-mode="system_proxy">Системный прокси</button>
+            <button data-mode="tun">TUN · весь трафик</button>
+          </div>
+          <div class="hint muted small" id="mode-hint"></div>
+        </div>
+
+        <div class="home-right">
+          <div class="card node-card" id="current-node"></div>
+          <div class="tiles">
+            <div class="tile">
+              <div class="tile-label">↓ Загрузка</div>
+              <div class="tile-val" id="rate-down">0 Б/с</div>
+              <div class="muted small" id="total-down">всего 0 Б</div>
+            </div>
+            <div class="tile">
+              <div class="tile-label">↑ Отдача</div>
+              <div class="tile-val" id="rate-up">0 Б/с</div>
+              <div class="muted small" id="total-up">всего 0 Б</div>
+            </div>
+            <div class="tile">
+              <div class="tile-label">Соединения</div>
+              <div class="tile-val" id="conn-count">0</div>
+              <div class="muted small" id="uptime">—</div>
+            </div>
+          </div>
+          <div class="card chart-card">
+            <div class="chart-head"><span>Трафик за 2 минуты</span><span class="legend"><i class="lg-down"></i>загрузка <i class="lg-up"></i>отдача</span></div>
+            <canvas id="spark" height="120"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- NODES -->
+    <section class="view" id="view-nodes">
+      <header class="view-head">
+        <h1>Узлы</h1>
+        <div class="actions">
+          <button class="btn primary" id="btn-import">+ Импорт</button>
+          <button class="btn" id="btn-test">Тест задержки</button>
+          <button class="btn" id="btn-update-subs">Обновить подписки</button>
+        </div>
+      </header>
+      <div class="card import hidden" id="import-panel">
+        <textarea id="import-text" spellcheck="false" placeholder="Ссылки vless:// vmess:// trojan:// ss:// hy2:// tuic:// wireguard:// (по одной на строку), base64-подписка, содержимое WireGuard .conf — или https://-ссылка на подписку"></textarea>
+        <div class="row">
+          <button class="btn primary" id="import-go">Добавить</button>
+          <button class="btn ghost" id="import-paste">Вставить из буфера</button>
+          <span class="muted small" id="import-hint"></span>
+        </div>
+      </div>
+      <div id="subs" class="subs"></div>
+      <div class="filter-row">
+        <input id="node-filter" placeholder="Поиск по имени, протоколу, серверу…" />
+        <span class="muted small" id="node-count"></span>
+      </div>
+      <div id="node-list" class="node-list"></div>
+    </section>
+
+    <!-- RULES -->
+    <section class="view" id="view-rules">
+      <header class="view-head">
+        <h1>Правила</h1>
+        <div class="actions">
+          <button class="btn" data-preset="ru">+ РФ напрямую</button>
+          <button class="btn" data-preset="ads">+ Блок рекламы</button>
+          <button class="btn ghost" data-preset="reset">Сбросить</button>
+          <button class="btn primary" id="rules-save">Применить</button>
+        </div>
+      </header>
+      <p class="muted lead">Проверяются сверху вниз, срабатывает первое совпадение. Цель может быть любым узлом — даже на другом ядре: так YouTube может идти через Xray, а игры через sing-box.</p>
+      <div class="rules" id="rules"></div>
+      <div class="row">
+        <button class="btn ghost" id="rule-add">+ Правило</button>
+        <div class="final">Всё остальное → <select id="final-target"></select></div>
+      </div>
+    </section>
+
+    <!-- CONNECTIONS -->
+    <section class="view" id="view-conns">
+      <header class="view-head">
+        <h1>Соединения</h1>
+        <div class="actions">
+          <input id="conn-filter" placeholder="Фильтр…" />
+          <label class="check"><input type="checkbox" id="conn-active-only" /> только активные</label>
+        </div>
+      </header>
+      <p class="muted lead">Каждое соединение показывает, какое правило сработало и через какой узел и ядро оно ушло.</p>
+      <div class="table-wrap">
+        <table class="table" id="conn-table">
+          <thead><tr><th>Назначение</th><th>Правило</th><th>Выход</th><th class="num">↑</th><th class="num">↓</th><th class="num">Время</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ENGINES -->
+    <section class="view" id="view-engines">
+      <header class="view-head"><h1>Движки</h1>
+        <div class="actions"><button class="btn" id="btn-versions">Проверить версии</button></div>
+      </header>
+      <p class="muted lead">Ядра запускаются как отдельные процессы — по одному на ядро, с отдельным SOCKS-входом на каждый узел. Маршрутизацию делает hub на Rust.</p>
+      <div class="engine-grid" id="engine-grid"></div>
+    </section>
+
+    <!-- LOGS -->
+    <section class="view" id="view-logs">
+      <header class="view-head"><h1>Логи</h1>
+        <div class="actions">
+          <label class="check"><input type="checkbox" id="log-follow" checked /> следить</label>
+          <button class="btn" id="log-copy">Копировать</button>
+        </div>
+      </header>
+      <pre class="logs" id="logs"></pre>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings">
+      <header class="view-head"><h1>Настройки</h1>
+        <div class="actions"><button class="btn primary" id="settings-save">Сохранить</button></div>
+      </header>
+      <div class="card form">
+        <label>Порт hub (SOCKS5 + HTTP)<input type="number" id="set-port" min="1024" max="65535" /></label>
+        <label class="check"><input type="checkbox" id="set-quic" /> Блокировать QUIC (UDP/443) в TUN-режиме — браузеры перейдут на TCP и весь веб пойдёт через правила</label>
+        <label>URL для теста задержки<input id="set-testurl" /></label>
+        <label>User-Agent для подписок<input id="set-ua" /></label>
+        <label>DNS для прямых соединений и адресов серверов в TUN-режиме<input id="set-dns" placeholder="8.8.8.8" /></label>
+        <div class="muted small" id="set-info"></div>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>

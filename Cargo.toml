@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/mosaic-core", "crates/mosaic-cli", "app/src-tauri"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true

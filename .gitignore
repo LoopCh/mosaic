@@ -1,0 +1,5 @@
+/target
+/engines
+/dist
+app/src-tauri/gen
+Cargo.lock.bak

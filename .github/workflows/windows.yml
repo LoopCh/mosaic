@@ -1,0 +1,38 @@
+name: windows-build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Unit tests (core)
+        run: cargo test -p mosaic-core
+
+      - name: Build app and CLI
+        run: cargo build --release -p mosaic -p mosaic-cli
+
+      - name: Download engines
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/get-engines.ps1
+
+      - name: Package portable build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/Mosaic | Out-Null
+          Copy-Item target/release/mosaic.exe, target/release/mosaic-cli.exe dist/Mosaic/
+          Copy-Item engines dist/Mosaic/engines -Recurse
+          Copy-Item README.md dist/Mosaic/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mosaic-windows-x64
+          path: dist/Mosaic

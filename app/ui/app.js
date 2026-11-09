@@ -499,6 +499,11 @@ function renderSettings() {
   $('#set-port').value = s.listen_port;
   $('#set-quic').checked = s.block_quic;
   $('#set-dnsleak').checked = s.dns_leak_protection !== false;
+  $('#set-tray').checked = s.close_to_tray !== false;
+  $('#set-autostart').checked = !!s.autostart;
+  $('#set-autoconnect').checked = !!s.auto_connect;
+  $('#set-remotedns').value = s.remote_dns || '';
+  $('#set-iprule').value = s.ip_rule_dns || 'remote';
   $('#set-testurl').value = s.test_url;
   $('#set-ua').value = s.user_agent;
   $('#set-dns').value = s.direct_dns || '';
@@ -516,14 +521,22 @@ $('#settings-save').addEventListener('click', (e) => withBusy(e.currentTarget, a
     listen_port: parseInt($('#set-port').value, 10) || 7890,
     block_quic: $('#set-quic').checked,
     dns_leak_protection: $('#set-dnsleak').checked,
+    close_to_tray: $('#set-tray').checked,
+    autostart: $('#set-autostart').checked,
+    auto_connect: $('#set-autoconnect').checked,
+    remote_dns: $('#set-remotedns').value.trim() || '1.1.1.1',
+    ip_rule_dns: $('#set-iprule').value,
     test_url: $('#set-testurl').value.trim(),
     user_agent: $('#set-ua').value.trim(),
     direct_dns: $('#set-dns').value.trim() || '8.8.8.8',
     domain_strategy: $('#set-strategy').value,
     tun_stack: $('#set-tunstack').value,
   };
-  await invoke('set_settings', { settings: s });
-  snap = await invoke('snapshot');
+  try {
+    await invoke('set_settings', { settings: s });
+  } finally {
+    snap = await invoke('snapshot');
+  }
   const l = pickLang(snap.settings.ui_language);
   if (l !== lang) { lang = l; rerenderAll(); }
   renderSettings();

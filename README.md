@@ -1,4 +1,4 @@
-# Mosaic 0.2
+# Mosaic 0.2.2
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -24,6 +24,19 @@ Interface languages: English, Русский (automatic, switchable in Settings)
   rules that block DNS (port 53) everywhere except the TUN interface; Mosaic and its engines are
   exempt. The WFP session is dynamic, so Windows removes the rules automatically even if Mosaic
   crashes. Toggle: Settings → “DNS leak protection”. Status is shown on the Home screen.
+
+## New in 0.2.2
+
+- **DNS through the tunnel:** in native TUN, MX/TXT/SRV/PTR… queries are forwarded to the remote DNS
+  (default 1.1.1.1, Settings → Remote DNS) through the active node; AAAA/HTTPS/SVCB stay empty so
+  apps keep using fake-IP routing. The sing-box adapter uses the same remote DNS.
+- **GeoIP resolution choice:** Settings → “Where to resolve names for GeoIP / IP rules”:
+  through the VPN (private, default) or locally (more accurate GeoIP).
+- **Tray:** open, connect/disconnect, switch node, quit. Double-click opens the window; closing the
+  window keeps Mosaic in the tray (Settings → Application).
+- **Autostart** (minimized to the tray) and **auto-connect**. Turn autostart on while Mosaic runs as
+  administrator: it then registers an elevated logon task, so TUN works right after logon.
+  Otherwise it uses the per-user Run key (system-proxy mode only).
 
 ## Quick start (Windows)
 

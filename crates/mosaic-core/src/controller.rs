@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +19,7 @@ use crate::hub::{self, Hub, Routing, Upstream};
 use crate::links;
 use crate::model::*;
 use crate::process::{self, EngineProcess};
-use crate::resolver::Resolver;
+use crate::resolver::{self, DnsCache, Resolver};
 use crate::rules;
 use crate::stats::{ConnView, Stats};
 use crate::store;
@@ -118,6 +119,7 @@ struct Session {
     direct_port: Option<u16>,
     geo: Arc<GeoData>,
     resolver: Arc<Resolver>,
+    remote_cache: Arc<DnsCache>,
     #[cfg(windows)]
     dns_guard: Option<crate::wfp::DnsGuard>,
 }
@@ -155,6 +157,8 @@ pub struct Controller {
     inner: Mutex<Inner>,
     pub stats: Arc<Stats>,
     pub logs: Arc<LogBuf>,
+    /// Mirrors `settings.close_to_tray` for the window event handler.
+    pub close_to_tray: AtomicBool,
     dir: PathBuf,
     admin: bool,
 }
@@ -169,6 +173,9 @@ fn routing_for(st: &State, s: &Session) -> Routing {
         geo: s.geo.clone(),
         strategy: st.settings.domain_strategy,
         resolver: s.resolver.clone(),
+        remote_dns: resolver::parse_dns_server(&st.settings.remote_dns, "1.1.1.1:53"),
+        ip_rule_dns: st.settings.ip_rule_dns,
+        remote_cache: s.remote_cache.clone(),
     }
 }
 
@@ -240,13 +247,23 @@ impl Controller {
             let _ = store::save_state(&dir, &state);
         }
         logs.push(format!("[hub] data: {}", dir.display()));
+        let close_to_tray = AtomicBool::new(state.settings.close_to_tray);
         Self {
             inner: Mutex::new(Inner { state, session: None, latency: HashMap::new() }),
             stats: Arc::new(Stats::default()),
             logs,
+            close_to_tray,
             dir,
             admin: sys::is_admin(),
         }
+    }
+
+    pub fn is_admin(&self) -> bool {
+        self.admin
+    }
+
+    pub async fn settings(&self) -> Settings {
+        self.inner.lock().await.state.settings.clone()
     }
 
     fn save(&self, st: &State) {
@@ -527,9 +544,24 @@ impl Controller {
         if new.listen_port < 1024 {
             new.listen_port = 7890;
         }
+        let mut autostart_err = None;
         let restart = {
             let mut g = self.inner.lock().await;
             let old = g.state.settings.clone();
+            if old.autostart != new.autostart {
+                let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+                match sys::set_autostart(new.autostart, &exe, self.admin) {
+                    Ok(()) => self.logs.push(format!(
+                        "[hub] autostart {}",
+                        if !new.autostart { "off" } else if self.admin { "on (elevated task, TUN works at logon)" } else { "on" }
+                    )),
+                    Err(e) => {
+                        new.autostart = old.autostart;
+                        autostart_err = Some(format!("Autostart: {e}"));
+                    }
+                }
+            }
+            self.close_to_tray.store(new.close_to_tray, Relaxed);
             g.state.settings = new.clone();
             self.save(&g.state);
             let inner = &mut *g;
@@ -542,13 +574,17 @@ impl Controller {
                     || old.block_quic != new.block_quic
                     || old.tun_stack != new.tun_stack
                     || old.direct_dns != new.direct_dns
-                    || old.dns_leak_protection != new.dns_leak_protection)
+                    || old.dns_leak_protection != new.dns_leak_protection
+                    || (new.mode == Mode::Tun && old.remote_dns != new.remote_dns && new.tun_stack == TunStack::Singbox))
         };
         if restart {
             self.disconnect().await;
             self.connect().await?;
         }
-        Ok(())
+        match autostart_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     // ------------------------------------------------------------ session
@@ -618,7 +654,8 @@ impl Controller {
         }
         let dns = if settings.direct_dns.trim().is_empty() { "8.8.8.8" } else { settings.direct_dns.trim() };
         let dns = dns.split(':').next().unwrap_or("8.8.8.8");
-        let cfg = singbox::compile_tun(hub_port, direct_port, &procs, domains, dns, settings.block_quic);
+        let remote = resolver::parse_dns_server(&settings.remote_dns, "1.1.1.1:53");
+        let cfg = singbox::compile_tun(hub_port, direct_port, &procs, domains, dns, &remote.ip().to_string(), settings.block_quic);
         let path = self.write_config("tun", &cfg)?;
         let mut p = EngineProcess::spawn(EngineKind::Singbox, "tun", &exe, &path, self.logs.clone()).await?;
         if let Err(e) = p.wait_ports(&[direct_port], Duration::from_secs(8)).await {
@@ -704,6 +741,7 @@ impl Controller {
             direct_port,
             geo,
             resolver,
+            remote_cache: Arc::new(DnsCache::default()),
             #[cfg(windows)]
             dns_guard: None,
         };

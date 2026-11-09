@@ -165,6 +165,7 @@ pub fn compile_tun(
     exclude_processes: &[String],
     server_domains: &[String],
     direct_dns: &str,
+    remote_dns: &str,
     block_quic: bool,
 ) -> Value {
     let mut rules = vec![
@@ -190,7 +191,7 @@ pub fn compile_tun(
         "dns": {
             "servers": [
                 { "type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18" },
-                { "type": "tcp", "tag": "remote", "server": "1.1.1.1", "detour": "hub" },
+                { "type": "tcp", "tag": "remote", "server": remote_dns, "detour": "hub" },
                 { "type": "udp", "tag": "direct-dns", "server": direct_dns }
             ],
             "rules": dns_rules,

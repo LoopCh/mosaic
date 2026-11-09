@@ -223,3 +223,5 @@ select { cursor: pointer; }
 .geo-status { margin-top: 14px; }
 .net { font-size: 10px; font-weight: 700; color: var(--warn); background: rgba(251, 191, 36, .12); padding: 2px 5px; border-radius: 6px; margin-right: 4px; }
 .form select { width: 100%; }
+
+.form-group { margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--text); font-weight: 600; }

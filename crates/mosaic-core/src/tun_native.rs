@@ -344,14 +344,17 @@ mod win {
         U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         if dst.port() == 53 {
-            return serve_dns(&mut udp, &dns).await;
+            return serve_dns(&mut udp, &dns, &routing).await;
         }
         let Some(host) = target_host(dst.ip(), &dns) else { return Ok(()) };
         crate::udp::relay_flow(udp, host, dst.port(), current(&routing), stats).await
     }
 
-    /// Fake-IP DNS: A → fake address (real ones for node servers), others → empty answer.
-    async fn serve_dns<S: AsyncRead + AsyncWrite + Unpin>(s: &mut S, st: &DnsState) -> io::Result<()> {
+    /// Fake-IP DNS:
+    ///   * A → fake address (real ones for node servers)
+    ///   * AAAA, HTTPS/SVCB → empty (they would hand apps real IPs and bypass fake-IP routing)
+    ///   * everything else (MX, TXT, SRV, CAA, PTR …) → forwarded through the tunnel
+    async fn serve_dns<S: AsyncRead + AsyncWrite + Unpin>(s: &mut S, st: &DnsState, routing: &SharedRouting) -> io::Result<()> {
         let mut buf = vec![0u8; 1500];
         loop {
             let n = match timeout(Duration::from_secs(30), s.read(&mut buf)).await {
@@ -365,8 +368,14 @@ mod win {
             } else if question.qtype == dns::TYPE_A {
                 let ip = st.fake.lock().unwrap().alloc(&question.name);
                 dns::build_response(q, end, dns::TYPE_A, &[IpAddr::V4(ip)], 1, 0)
-            } else {
+            } else if matches!(question.qtype, dns::TYPE_AAAA | dns::TYPE_SVCB | dns::TYPE_HTTPS) {
                 dns::build_response(q, end, question.qtype, &[], 1, 0)
+            } else {
+                let r = current(routing);
+                match r.remote_exchange(q).await {
+                    Ok(resp) if resp.len() >= 12 => resp,
+                    _ => dns::build_response(q, end, question.qtype, &[], 1, 2), // SERVFAIL
+                }
             };
             s.write_all(&resp).await?;
         }

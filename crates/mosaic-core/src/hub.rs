@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -15,8 +15,9 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::geo::GeoData;
-use crate::model::{DomainStrategy, EngineKind, Rule};
-use crate::resolver::Resolver;
+use crate::dns;
+use crate::model::{DomainStrategy, EngineKind, IpRuleDns, Rule};
+use crate::resolver::{self, DnsCache, Resolver};
 use crate::rules;
 use crate::stats::{ConnEntry, Stats};
 use crate::util::LogBuf;
@@ -56,7 +57,12 @@ pub struct Routing {
     pub direct_via: Option<u16>,
     pub geo: Arc<GeoData>,
     pub strategy: DomainStrategy,
+    /// Local/direct DNS.
     pub resolver: Arc<Resolver>,
+    /// DNS server reached through the active node.
+    pub remote_dns: SocketAddr,
+    pub ip_rule_dns: IpRuleDns,
+    pub remote_cache: Arc<DnsCache>,
 }
 
 pub type SharedRouting = Arc<RwLock<Arc<Routing>>>;
@@ -73,7 +79,47 @@ impl Routing {
             geo: Arc::new(GeoData::default()),
             strategy: DomainStrategy::AsIs,
             resolver: Arc::new(Resolver::system()),
+            remote_dns: "1.1.1.1:53".parse().unwrap(),
+            ip_rule_dns: IpRuleDns::Remote,
+            remote_cache: Arc::new(DnsCache::default()),
         }
+    }
+
+    /// Raw DNS exchange through the active node (the query ID is preserved).
+    pub async fn remote_exchange(&self, query: &[u8]) -> io::Result<Vec<u8>> {
+        let u = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.upstreams.get(id))
+            .ok_or_else(|| other("no active node for remote DNS"))?;
+        match timeout(Duration::from_secs(5), resolver::exchange_via_socks(u.port, self.remote_dns, query)).await {
+            Ok(r) => r,
+            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "remote DNS timeout")),
+        }
+    }
+
+    /// Resolve through the tunnel (A, then AAAA), cached.
+    pub async fn remote_resolve(&self, host: &str) -> io::Result<Vec<IpAddr>> {
+        let key = host.to_ascii_lowercase();
+        if let Some(v) = self.remote_cache.get(&key) {
+            return Ok(v);
+        }
+        let mut out = Vec::new();
+        for qtype in [dns::TYPE_A, dns::TYPE_AAAA] {
+            let id = (crate::util::now_ms() as u16) ^ qtype;
+            let resp = self.remote_exchange(&dns::build_query(id, &key, qtype)).await?;
+            if let Some((_, _, addrs)) = dns::parse_response(&resp) {
+                out.extend(addrs.into_iter().map(|(ip, _)| ip));
+            }
+            if !out.is_empty() {
+                break;
+            }
+        }
+        if out.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("{host}: no addresses")));
+        }
+        self.remote_cache.put(&key, out.clone());
+        Ok(out)
     }
 
     /// `resolved_ip` is set on the second pass after a NeedIp verdict.
@@ -102,7 +148,11 @@ impl Routing {
         match self.decide(host, port, None) {
             Verdict::Done(d, r) => (d, r),
             Verdict::NeedIp => {
-                let ip = self.resolver.resolve(host).await.ok().and_then(|v| v.into_iter().next());
+                let found = match self.ip_rule_dns {
+                    IpRuleDns::Remote => self.remote_resolve(host).await,
+                    IpRuleDns::Local => self.resolver.resolve(host).await,
+                };
+                let ip = found.ok().and_then(|v| v.into_iter().next());
                 match self.decide(host, port, ip.or(Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)))) {
                     Verdict::Done(d, r) => (d, r),
                     Verdict::NeedIp => (self.target(&self.final_target), "final".into()),

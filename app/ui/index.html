@@ -199,6 +199,18 @@
         </label>
         <label class="check"><input type="checkbox" id="set-quic" /> <span data-i18n="settings.quic"></span></label>
         <label class="check"><input type="checkbox" id="set-dnsleak" /> <span data-i18n="settings.dnsLeak"></span></label>
+        <div class="form-group" data-i18n="settings.groupApp"></div>
+        <label class="check"><input type="checkbox" id="set-tray" /> <span data-i18n="settings.closeToTray"></span></label>
+        <label class="check"><input type="checkbox" id="set-autostart" /> <span data-i18n="settings.autostart"></span></label>
+        <label class="check"><input type="checkbox" id="set-autoconnect" /> <span data-i18n="settings.autoConnect"></span></label>
+        <div class="form-group" data-i18n="settings.groupDns"></div>
+        <label><span data-i18n="settings.remoteDns"></span><input id="set-remotedns" placeholder="1.1.1.1" /></label>
+        <label><span data-i18n="settings.ipRuleDns"></span>
+          <select id="set-iprule">
+            <option value="remote" data-i18n="settings.ipRuleRemote"></option>
+            <option value="local" data-i18n="settings.ipRuleLocal"></option>
+          </select>
+        </label>
         <label><span data-i18n="settings.dns"></span><input id="set-dns" placeholder="8.8.8.8" /></label>
         <label><span data-i18n="settings.testUrl"></span><input id="set-testurl" /></label>
         <label><span data-i18n="settings.ua"></span><input id="set-ua" /></label>

@@ -337,6 +337,17 @@ pub enum DomainStrategy {
     IpIfNonMatch,
 }
 
+/// Where names are resolved when IP rules need an address.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IpRuleDns {
+    /// Through the active node to the remote DNS server (private).
+    #[default]
+    Remote,
+    /// With the local/direct DNS (more accurate for GeoIP, but visible locally).
+    Local,
+}
+
 /// Which implementation provides TUN mode.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -365,6 +376,15 @@ pub struct Settings {
     pub ui_language: String,
     /// Windows: block DNS outside the TUN interface while TUN is up.
     pub dns_leak_protection: bool,
+    /// DNS server queried through the tunnel ("1.1.1.1", "9.9.9.9:53" …).
+    pub remote_dns: String,
+    pub ip_rule_dns: IpRuleDns,
+    /// Closing the window hides Mosaic to the tray.
+    pub close_to_tray: bool,
+    /// Start with Windows (minimized to the tray).
+    pub autostart: bool,
+    /// Connect automatically when Mosaic starts.
+    pub auto_connect: bool,
 }
 
 impl Default for Settings {
@@ -381,6 +401,11 @@ impl Default for Settings {
             tun_stack: TunStack::Singbox,
             ui_language: "auto".into(),
             dns_leak_protection: true,
+            remote_dns: "1.1.1.1".into(),
+            ip_rule_dns: IpRuleDns::Remote,
+            close_to_tray: true,
+            autostart: false,
+            auto_connect: false,
         }
     }
 }

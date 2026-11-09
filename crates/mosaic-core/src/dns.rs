@@ -5,6 +5,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub const TYPE_A: u16 = 1;
 pub const TYPE_AAAA: u16 = 28;
+pub const TYPE_SVCB: u16 = 64;
+pub const TYPE_HTTPS: u16 = 65;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Question {

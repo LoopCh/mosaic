@@ -7,9 +7,53 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
 use crate::dns;
 
 const CACHE_TTL: Duration = Duration::from_secs(120);
+
+/// Parse "1.1.1.1", "1.1.1.1:53", "[2606:4700::1111]:53"; `default` if invalid.
+pub fn parse_dns_server(s: &str, default: &str) -> SocketAddr {
+    let s = s.trim();
+    s.parse::<SocketAddr>()
+        .ok()
+        .or_else(|| s.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, 53)))
+        .unwrap_or_else(|| default.parse().unwrap())
+}
+
+/// Small TTL cache shared by remote lookups.
+#[derive(Default)]
+pub struct DnsCache(Mutex<HashMap<String, (Vec<IpAddr>, Instant)>>);
+
+impl DnsCache {
+    pub fn get(&self, host: &str) -> Option<Vec<IpAddr>> {
+        let g = self.0.lock().unwrap();
+        g.get(host).filter(|(_, at)| at.elapsed() < CACHE_TTL).map(|(v, _)| v.clone())
+    }
+
+    pub fn put(&self, host: &str, ips: Vec<IpAddr>) {
+        let mut g = self.0.lock().unwrap();
+        if g.len() > 4096 {
+            g.clear();
+        }
+        g.insert(host.to_string(), (ips, Instant::now()));
+    }
+}
+
+/// One DNS exchange over TCP (RFC 1035 length-prefixed) through a local
+/// engine SOCKS inbound — i.e. through the tunnel.
+pub async fn exchange_via_socks(engine_port: u16, server: SocketAddr, query: &[u8]) -> io::Result<Vec<u8>> {
+    let mut s = crate::hub::socks_connect(engine_port, &server.ip().to_string(), server.port()).await?;
+    let mut msg = Vec::with_capacity(query.len() + 2);
+    msg.extend_from_slice(&(query.len() as u16).to_be_bytes());
+    msg.extend_from_slice(query);
+    s.write_all(&msg).await?;
+    let len = s.read_u16().await? as usize;
+    let mut buf = vec![0u8; len];
+    s.read_exact(&mut buf).await?;
+    Ok(buf)
+}
 
 pub enum Upstream {
     /// Operating-system resolver.
@@ -34,13 +78,7 @@ impl Resolver {
 
     /// Parse "8.8.8.8", "1.1.1.1:53" or "[2606:4700::1111]:53"; falls back to 8.8.8.8.
     pub fn udp_from_setting(s: &str) -> Self {
-        let s = s.trim();
-        let addr = s
-            .parse::<SocketAddr>()
-            .ok()
-            .or_else(|| s.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, 53)))
-            .unwrap_or_else(|| "8.8.8.8:53".parse().unwrap());
-        Self::udp(addr)
+        Self::udp(parse_dns_server(s, "8.8.8.8:53"))
     }
 
     pub fn is_system(&self) -> bool {

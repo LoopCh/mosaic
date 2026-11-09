@@ -25,6 +25,37 @@ pub fn unset_system_proxy() -> Result<(), String> {
     }
 }
 
+/// Start Mosaic with Windows. When running elevated, a scheduled task with
+/// highest privileges is used (so TUN works at logon); otherwise the
+/// per-user Run key. `enable = false` removes both.
+pub fn set_autostart(enable: bool, exe: &std::path::Path, elevated: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        win::set_autostart(enable, exe, elevated)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (exe, elevated);
+        if enable {
+            Err("autostart is implemented for Windows only so far".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// True if the OS user interface language is Russian (for the tray menu).
+pub fn ui_lang_is_ru() -> bool {
+    #[cfg(windows)]
+    {
+        win::ui_lang_is_ru()
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("LANG").map(|l| l.starts_with("ru")).unwrap_or(false)
+    }
+}
+
 pub fn is_admin() -> bool {
     #[cfg(windows)]
     {
@@ -59,6 +90,60 @@ mod win {
     #[link(name = "shell32")]
     extern "system" {
         fn IsUserAnAdmin() -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetUserDefaultUILanguage() -> u16;
+    }
+
+    const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    const TASK: &str = "Mosaic";
+
+    fn run_quiet(cmd: &str, args: &[&str]) -> Result<(), String> {
+        let out = Command::new(cmd)
+            .args(args)
+            .creation_flags(0x0800_0000)
+            .output()
+            .map_err(|e| format!("{cmd}: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            Err(format!("{cmd}: {}", text.trim()))
+        }
+    }
+
+    pub fn set_autostart(enable: bool, exe: &std::path::Path, elevated: bool) -> Result<(), String> {
+        let _ = run_quiet("reg", &["delete", RUN_KEY, "/v", TASK, "/f"]);
+        let removed_task = run_quiet("schtasks", &["/Delete", "/TN", TASK, "/F"]);
+        if !enable {
+            if let Err(e) = removed_task {
+                // Only a problem if the task exists and we lack the rights to delete it.
+                if run_quiet("schtasks", &["/Query", "/TN", TASK]).is_ok() {
+                    return Err(format!("run Mosaic as administrator to remove the elevated autostart task ({e})"));
+                }
+            }
+            return Ok(());
+        }
+        let command = format!("\"{}\" --minimized", exe.display());
+        if elevated {
+            let user = format!(
+                "{}\\{}",
+                std::env::var("USERDOMAIN").unwrap_or_default(),
+                std::env::var("USERNAME").unwrap_or_default()
+            );
+            run_quiet(
+                "schtasks",
+                &["/Create", "/F", "/TN", TASK, "/SC", "ONLOGON", "/RL", "HIGHEST", "/IT", "/RU", &user, "/DELAY", "0000:10", "/TR", &command],
+            )
+        } else {
+            run_quiet("reg", &["add", RUN_KEY, "/v", TASK, "/t", "REG_SZ", "/d", &command, "/f"])
+        }
+    }
+
+    pub fn ui_lang_is_ru() -> bool {
+        (unsafe { GetUserDefaultUILanguage() } & 0x3ff) == 0x19
     }
 
     fn reg(args: &[&str]) -> Result<(), String> {

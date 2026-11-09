@@ -486,7 +486,9 @@ mod win {
         let name = format!("name={TUN_NAME}");
         netsh(&["interface", "ipv4", "set", "address", &name, "static", &TUN_ADDR.to_string(), "255.255.255.252"])?;
         let _ = netsh(&["interface", "ipv4", "set", "subinterface", TUN_NAME, &format!("mtu={MTU}"), "store=active"]);
-        let _ = netsh(&["interface", "ipv4", "set", "interface", TUN_NAME, "metric=1"]);
+        if let Err(e) = netsh(&["interface", "ipv4", "set", "interface", TUN_NAME, "metric=1"]) {
+            r.logs.push(format!("[tun] interface metric: {e}"));
+        }
         netsh(&["interface", "ipv4", "set", "dnsservers", &name, "source=static", &format!("address={TUN_PEER}"), "register=none", "validate=no"])?;
         let idx = phys_idx.to_string();
         for ip in bypass_ips {
@@ -501,6 +503,14 @@ mod win {
         for half in ["0.0.0.0/1", "128.0.0.0/1"] {
             netsh(&["interface", "ipv4", "add", "route", half, TUN_NAME, &peer, "metric=1", "store=active"])?;
         }
+        // A default route on the TUN as well (the halves above already win by prefix length):
+        // Windows asks the DNS servers of the interface with the best *default* route first —
+        // without it the system DNS may keep using the physical adapter, whose DNS is blocked.
+        if let Err(e) = netsh(&["interface", "ipv4", "add", "route", "0.0.0.0/0", TUN_NAME, &peer, "metric=1", "store=active"]) {
+            r.logs.push(format!("[tun] default route: {e}"));
+        }
+        // Answers cached before the tunnel came up would skip it.
+        let _ = run("ipconfig", &["/flushdns"]);
         // IPv6: capture it too so it cannot bypass the tunnel (DNS answers are IPv4-only).
         let _ = netsh(&["interface", "ipv6", "set", "address", TUN_NAME, "fdfe:dcba:9876::1/126", "store=active"]);
         for half in ["::/1", "8000::/1"] {

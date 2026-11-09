@@ -1366,7 +1366,26 @@ impl Controller {
             }
             tokio::time::sleep(Duration::from_millis(700)).await;
         }
+        self.log_dns_setup();
         Err(format!("DNS check failed: names cannot be resolved in TUN mode ({last})."))
+    }
+
+    /// For the logs when the DNS check fails: interface order and DNS servers as Windows sees them.
+    #[cfg(windows)]
+    fn log_dns_setup(&self) {
+        use std::os::windows::process::CommandExt;
+        let script = "Get-NetIPInterface -AddressFamily IPv4 | Sort-Object InterfaceMetric | Select-Object -First 6 InterfaceAlias,InterfaceMetric,ConnectionState | Format-Table -AutoSize | Out-String -Width 200; \
+                      Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses } | Format-Table InterfaceAlias,ServerAddresses -AutoSize | Out-String -Width 200; \
+                      Get-NetRoute -AddressFamily IPv4 -DestinationPrefix 0.0.0.0/0 | Format-Table InterfaceAlias,NextHop,RouteMetric -AutoSize | Out-String -Width 200";
+        if let Ok(out) = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .creation_flags(0x0800_0000)
+            .output()
+        {
+            for line in String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()) {
+                self.logs.push(format!("[dns-check] {line}"));
+            }
+        }
     }
 
     #[cfg(not(windows))]

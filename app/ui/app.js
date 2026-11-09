@@ -28,6 +28,8 @@ function pickLang(setting) {
   return window.I18N[want] ? want : 'en';
 }
 function t(key, ...args) {
+  // Platform-specific wording: "key@android" wins over "key" on Android.
+  if (isAndroid() && (window.I18N.en[key + '@android'] !== undefined)) key += '@android';
   const s = (window.I18N[lang] && window.I18N[lang][key]) ?? window.I18N.en[key] ?? key;
   return s.replace(/\{(\d)\}/g, (_, i) => String(args[+i] ?? ''));
 }
@@ -57,6 +59,32 @@ function toast(msg, kind = 'info', ms = 4500) {
   $('#toasts').appendChild(el);
   setTimeout(() => el.remove(), kind === 'error' ? Math.max(ms, 9000) : ms);
 }
+// In-app confirmation dialog (window.confirm is unreliable in embedded web views:
+// Android's WebView answers "Cancel" without showing anything).
+function ask(message, okLabel) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-wrap';
+    wrap.innerHTML = `<div class="modal card" role="dialog" aria-modal="true">
+      <div class="modal-text"></div>
+      <div class="modal-actions"><button class="btn ghost" data-a="0"></button><button class="btn primary" data-a="1"></button></div>
+    </div>`;
+    $('.modal-text', wrap).textContent = message;
+    $('[data-a="0"]', wrap).textContent = t('dlg.cancel');
+    $('[data-a="1"]', wrap).textContent = okLabel || t('dlg.ok');
+    const done = (v) => { wrap.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+    const onKey = (e) => { if (e.key === 'Escape') done(false); if (e.key === 'Enter') done(true); };
+    wrap.addEventListener('click', (e) => {
+      if (e.target === wrap) done(false);
+      const a = e.target.closest('[data-a]');
+      if (a) done(a.dataset.a === '1');
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(wrap);
+    $('[data-a="1"]', wrap).focus();
+  });
+}
+
 async function withBusy(btn, fn) {
   if (btn) btn.disabled = true;
   try { return await fn(); }
@@ -118,7 +146,7 @@ function renderUpdateBanner() {
 }
 $('#update-install').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   if (!snap.app_update.installer) { await invoke('open_url', { url: snap.app_update.page }); return; }
-  if (!confirm(t('upd.confirm', snap.app_update.version))) return;
+  if (!(await ask(t('upd.confirm', snap.app_update.version), t('upd.install')))) return;
   e.currentTarget.textContent = t('upd.downloading');
   await invoke('install_app_update');
 }));
@@ -296,7 +324,7 @@ function renderNodes() {
       <button data-sub="${esc(s.url)}" title="${t('nodes.subDelete')}">×</button>
     </div>`).join('');
   $$('#subs button').forEach((b) => b.onclick = () => withBusy(null, async () => {
-    if (!confirm(t('nodes.subConfirm'))) return;
+    if (!(await ask(t('nodes.subConfirm'), t('dlg.delete')))) return;
     await invoke('remove_subscription', { url: b.dataset.sub });
     snap = await invoke('snapshot'); nodesKey = ''; renderNodes();
   }));
@@ -564,7 +592,7 @@ $('#btn-engines-check').addEventListener('click', (e) => withBusy(e.currentTarge
   renderEngines();
 }));
 $('#btn-engines-reset').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-  if (!confirm(t('engines.resetConfirm'))) return;
+  if (!(await ask(t('engines.resetConfirm'), t('engines.reset')))) return;
   await invoke('reset_engines');
   engineUpdates = {};
   await loadEngineVersions();

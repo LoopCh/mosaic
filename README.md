@@ -1,4 +1,4 @@
-# Mosaic 0.5
+# Mosaic 0.5.1
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -6,6 +6,13 @@ that only carry traffic to servers. Rules can send different traffic to nodes on
 different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
+
+## New in 0.5.1
+
+- Deleting a subscription works again: confirmations are now Mosaic's own dialogs (the system
+  `confirm()` is silently refused by Android's WebView and is unreliable in embedded web views).
+- Phones: nodes, rules and connections are laid out as cards so every property is visible.
+- Android wording (no mentions of Windows or administrator rights).
 
 ## New in 0.5 — Android (first version)
 
@@ -62,8 +69,8 @@ Keep `mosaic.jks` safe: an app signed with a lost key can never be updated.
 ### Releasing
 
 ```
-git tag v0.5.0
-git push origin v0.5.0
+git tag v0.5.1
+git push origin v0.5.1
 ```
 
 The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub

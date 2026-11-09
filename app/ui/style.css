@@ -304,16 +304,44 @@ select { cursor: pointer; }
   .filter-row input { width: 100%; }
   .smart { flex-wrap: wrap; }
   .smart-state { text-align: left; max-width: none; }
-  .node { grid-template-columns: 16px minmax(0, 1fr) auto 96px 28px; gap: 10px; padding: 11px 10px; }
-  .node > .badge { display: none; }
+  /* nodes: name and details wrap; engine, latency and engine choice on a second line */
+  .node { grid-template-columns: 18px auto minmax(0, 1fr) auto 32px; grid-template-areas: "radio info info info del" ". badge lat sel sel"; gap: 8px 10px; padding: 12px; align-items: center; }
+  .node > .radio { grid-area: radio; align-self: start; margin-top: 2px; }
+  .node > div:nth-child(2) { grid-area: info; }
+  .node > .badge { grid-area: badge; }
+  .node > .lat { grid-area: lat; text-align: left; min-width: 0; }
+  .node > .engine-sel { grid-area: sel; justify-self: end; }
+  .node > .icon-btn { grid-area: del; align-self: start; }
+  .node-name, .node-meta { white-space: normal; overflow-wrap: anywhere; }
+  .node-meta { line-height: 1.4; }
 
   .country select { min-width: 0; width: 100%; }
   .final { margin-left: 0; flex-wrap: wrap; }
-  .rule { grid-template-columns: 22px 1fr 1fr 28px 28px 28px; grid-template-areas: "on kind tgt up down del" "val val val val val val"; }
+  .rule { grid-template-columns: 26px minmax(0, 1fr) 36px 36px 36px; grid-template-areas: "on kind kind kind kind" "val val val val val" "tgt tgt up down del"; gap: 8px; padding: 10px; }
   .rule .r-on { grid-area: on; } .rule .r-kind { grid-area: kind; min-width: 0; } .rule .r-target { grid-area: tgt; min-width: 0; }
   .rule .r-up { grid-area: up; } .rule .r-down { grid-area: down; } .rule .r-del { grid-area: del; } .rule .r-val { grid-area: val; }
 
-  .table th, .table td { padding: 8px 10px; }
+  /* connections: one card per connection instead of a wide table */
+  .table-wrap { background: none; border: 0; overflow: visible; }
+  .view-head .actions { width: 100%; }
+  #conn-filter { flex: 1 1 100%; }
+  .table thead { display: none; }
+  .table, .table tbody { display: block; }
+  .table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; grid-template-areas: "dest dest dest dur" "out out up down" "rule rule rule app";
+    gap: 4px 12px; padding: 10px 12px; margin-bottom: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+  .table td { display: block; padding: 0; border: 0; max-width: none; white-space: normal; overflow-wrap: anywhere; }
+  .table td:nth-child(1) { grid-area: app; text-align: right; }
+  .table td:nth-child(2) { grid-area: dest; font-weight: 550; }
+  .table td:nth-child(3) { grid-area: rule; max-width: none; }
+  .table td:nth-child(4) { grid-area: out; }
+  .table td:nth-child(5) { grid-area: up; } .table td:nth-child(5)::before { content: "↑ "; }
+  .table td:nth-child(6) { grid-area: down; } .table td:nth-child(6)::before { content: "↓ "; }
+  .table td:nth-child(7) { grid-area: dur; color: var(--muted); }
+  .table td[colspan] { grid-column: 1 / -1; }
+  .table tr.err { border-color: rgba(248, 113, 113, .4); }
+  .table tr.err td:first-child { box-shadow: none; }
+  [data-platform="android"] .table td:nth-child(1) { display: none; }
+  [data-platform="android"] .table tr { grid-template-areas: "dest dest dest dur" "out out up down" "rule rule rule rule"; }
   .engine dl { grid-template-columns: 96px 1fr; }
   .logs { height: calc(100dvh - 170px); }
 
@@ -325,3 +353,9 @@ select { cursor: pointer; }
 
   #toasts { left: 12px; right: 12px; bottom: 76px; max-width: none; }
 }
+
+/* ---------- dialogs */
+.modal-wrap { position: fixed; inset: 0; z-index: 20; background: rgba(5, 6, 10, .6); backdrop-filter: blur(3px); display: grid; place-items: center; padding: 20px; animation: fade .15s ease; }
+.modal { width: min(420px, 100%); padding: 20px; box-shadow: 0 20px 60px rgba(0, 0, 0, .5); }
+.modal-text { line-height: 1.5; white-space: pre-wrap; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }

@@ -3,3 +3,12 @@
 /dist
 app/src-tauri/gen
 Cargo.lock.bak
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/app/src/main/jniLibs/
+android/app/src/main/assets/geo/
+out/

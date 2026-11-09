@@ -32,6 +32,14 @@ impl EngineKind {
     }
 
     pub fn exe_name(self) -> &'static str {
+        // Android only lets apps execute files from their native library folder,
+        // so the engines are packaged as lib*.so there.
+        if cfg!(target_os = "android") {
+            return match self {
+                EngineKind::Xray => "libxray.so",
+                EngineKind::Singbox => "libsingbox.so",
+            };
+        }
         match (self, cfg!(windows)) {
             (EngineKind::Xray, true) => "xray.exe",
             (EngineKind::Xray, false) => "xray",

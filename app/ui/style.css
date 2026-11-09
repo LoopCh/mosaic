@@ -264,3 +264,64 @@ select { cursor: pointer; }
 .set-ctl-row .btn { white-space: nowrap; }
 .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); border-top-color: var(--accent, #7c5cff); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- 0.5: platforms and small screens */
+[data-platform="android"] .desktop-only { display: none !important; }
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; height: 100vh; height: 100dvh; }
+  .side { order: 2; flex-direction: row; padding: 4px 6px calc(4px + env(safe-area-inset-bottom)); border-right: 0; border-top: 1px solid var(--line); }
+  .brand, .side-foot { display: none; }
+  .nav { flex-direction: row; width: 100%; justify-content: space-between; }
+  .nav button { flex: 1; justify-content: center; padding: 12px 4px; }
+  .nav button span { display: none; }
+  .nav button svg { width: 22px; height: 22px; }
+  .nav button.active { box-shadow: inset 0 2px 0 var(--accent); background: rgba(124, 92, 255, .14); }
+  main { order: 1; padding: calc(14px + env(safe-area-inset-top)) 14px 24px; }
+
+  .view-head { flex-wrap: wrap; gap: 10px; }
+  .view-head h1 { font-size: 20px; }
+  .lead { font-size: 13px; }
+  .banner { flex-wrap: wrap; }
+
+  .home { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .home > *, .home-right > * { min-width: 0; }
+  .hint { max-width: 100%; }
+  .node-card { flex-wrap: wrap; gap: 10px 14px; padding: 16px; }
+  .node-card .grow { flex: 1 1 calc(100% - 60px); }
+  .node-card .btn { margin-left: auto; }
+  .hero { padding: 26px 14px 18px; }
+  .power { width: 150px; height: 150px; }
+  .power svg { width: 52px; height: 52px; }
+  .hero-state { margin-top: 20px; }
+  .seg { margin-top: 20px; }
+  .seg button { padding: 9px 16px; }
+  .tiles { gap: 8px; }
+  .tile { padding: 10px 12px; }
+  .tile-val { font-size: 17px; }
+
+  .filter-row { flex-wrap: wrap; }
+  .filter-row input { width: 100%; }
+  .smart { flex-wrap: wrap; }
+  .smart-state { text-align: left; max-width: none; }
+  .node { grid-template-columns: 16px minmax(0, 1fr) auto 96px 28px; gap: 10px; padding: 11px 10px; }
+  .node > .badge { display: none; }
+
+  .country select { min-width: 0; width: 100%; }
+  .final { margin-left: 0; flex-wrap: wrap; }
+  .rule { grid-template-columns: 22px 1fr 1fr 28px 28px 28px; grid-template-areas: "on kind tgt up down del" "val val val val val val"; }
+  .rule .r-on { grid-area: on; } .rule .r-kind { grid-area: kind; min-width: 0; } .rule .r-target { grid-area: tgt; min-width: 0; }
+  .rule .r-up { grid-area: up; } .rule .r-down { grid-area: down; } .rule .r-del { grid-area: del; } .rule .r-val { grid-area: val; }
+
+  .table th, .table td { padding: 8px 10px; }
+  .engine dl { grid-template-columns: 96px 1fr; }
+  .logs { height: calc(100dvh - 170px); }
+
+  .set-card { padding: 4px 14px; }
+  .set-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  .set-row:has(> .set-ctl > .switch), .set-row:has(> .set-ctl-row) { flex-direction: row; align-items: center; }
+  .set-ctl { width: 100%; justify-content: flex-start; }
+  .set-row:has(> .set-ctl > .switch) .set-ctl, .set-ctl-row { width: auto; }
+
+  #toasts { left: 12px; right: 12px; bottom: 76px; max-width: none; }
+}

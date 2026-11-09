@@ -10,7 +10,9 @@
 //! * `dns`, `resolver`, `sniff`, `net` — helpers for TUN modes
 //! * `tun_native` — Mosaic's own TUN stack (feature `native-tun`, experimental)
 //! * `controller` — glues everything together; this is what the UI and CLI call
+//! * `api`     — the UI commands as one JSON entry point (used by the Android app)
 
+pub mod api;
 pub mod b64;
 pub mod controller;
 pub mod dns;

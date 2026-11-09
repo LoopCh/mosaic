@@ -1,4 +1,4 @@
-# Mosaic 0.4
+# Mosaic 0.5
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -6,6 +6,45 @@ that only carry traffic to servers. Rules can send different traffic to nodes on
 different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
+
+## New in 0.5 — Android (first version)
+
+- **Android app** (arm64, Android 8+): the same interface as on the desktop, adapted to phones
+  (bottom navigation), and the same Rust core (`crates/mosaic-android`, a JNI library).
+- **VPN mode:** Android's VpnService creates the interface, Mosaic's own TCP/IP stack (the native TUN
+  from Windows) runs on it with fake-IP DNS, sniffing and all rules. Mosaic excludes itself from the
+  VPN, so engines and direct connections never loop back into the tunnel.
+- **Proxy mode:** only the local SOCKS5/HTTP proxy (127.0.0.1:7890, or the LAN with “allow devices”).
+- Xray and sing-box run as on the desktop (Android builds, packaged as `libxray.so` / `libsingbox.so`).
+  Node servers are resolved by Mosaic and passed to the engines as IPs (Go cannot use Android's DNS).
+- A notification with “Disconnect” keeps the connection alive when the app is closed.
+- Engines are updated together with the app on Android (the system does not allow running downloaded files).
+- Desktop: “Restore bundled versions” is shown only when updated engines are installed.
+
+Not in this version yet: per-app rules on Android, split tunnelling by app, auto-connect at boot,
+x86_64/armv7 builds, in-app APK updates (the banner opens the release page).
+
+### Android build
+
+CI (`.github/workflows/android.yml`) builds `Mosaic_<version>_android-arm64.apk` on every push (artifact)
+and attaches it to releases. Locally: Rust + `cargo install cargo-ndk`, Android SDK/NDK, then
+
+```
+cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build --release -p mosaic-android
+./scripts/get-engines-android.sh
+cd android && gradle assembleRelease
+```
+
+**Signing.** Without secrets the APK is signed with a throwaway key, so each build must be installed
+over a clean uninstall. For updates that install over each other, create a key once and add four repo
+secrets (`ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`):
+
+```
+keytool -genkeypair -v -keystore mosaic.jks -alias mosaic -keyalg RSA -keysize 4096 -validity 10000
+base64 -w0 mosaic.jks   # → ANDROID_KEYSTORE_B64
+```
+
+Keep `mosaic.jks` safe: an app signed with a lost key can never be updated.
 
 ## New in 0.4
 
@@ -23,8 +62,8 @@ Interface languages: English, Русский (automatic, switchable in Settings)
 ### Releasing
 
 ```
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.5.0
+git push origin v0.5.0
 ```
 
 The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub

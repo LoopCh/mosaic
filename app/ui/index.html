@@ -52,9 +52,9 @@
           <div class="hero-state" id="hero-state"></div>
           <div class="hero-sub muted" id="hero-sub"></div>
           <div class="seg" id="mode-seg">
-            <button data-mode="system_proxy" data-i18n="mode.proxy"></button>
+            <button data-mode="system_proxy" data-i18n="mode.proxy" class="desktop-only"></button>
             <button data-mode="proxy" data-i18n="mode.proxyOnly"></button>
-            <button data-mode="tun" data-i18n="mode.tun"></button>
+            <button data-mode="tun" data-i18n="mode.tun" data-i18n-android="mode.vpn"></button>
           </div>
           <div class="hint muted small" id="mode-hint"></div>
         </div>
@@ -194,10 +194,10 @@
         <h2 data-i18n="sec.general"></h2>
         <div class="set-row"><div class="set-text"><div class="set-title" id="set-version"></div><div class="set-desc" data-i18n="set.updates.d"></div></div><div class="set-ctl set-ctl-row"><label class="switch"><input type="checkbox" id="set-updates" /><span></span></label><button class="btn" id="btn-app-check" data-i18n="upd.checkNow"></button></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.lang.t"></div><div class="set-desc" data-i18n="set.lang.d"></div></div><div class="set-ctl"><select id="set-lang"><option value="auto" data-i18n="set.lang.auto"></option><option value="en">English</option><option value="ru">Русский</option></select></div></div>
-        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.tray.t"></div><div class="set-desc" data-i18n="set.tray.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-tray" /><span></span></label></div></div>
-        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.autostart.t"></div><div class="set-desc" data-i18n="set.autostart.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-autostart" /><span></span></label></div></div>
-        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.autoconnect.t"></div><div class="set-desc" data-i18n="set.autoconnect.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-autoconnect" /><span></span></label></div></div>
-        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.startup.t"></div><div class="set-desc" data-i18n="set.startup.d"></div></div><div class="set-ctl"><select id="set-startup"><option value="last" data-i18n="set.startup.last"></option><option value="system_proxy" data-i18n="mode.proxy"></option><option value="proxy" data-i18n="mode.proxyOnly"></option><option value="tun" data-i18n="mode.tun"></option></select></div></div>
+        <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.tray.t"></div><div class="set-desc" data-i18n="set.tray.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-tray" /><span></span></label></div></div>
+        <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.autostart.t"></div><div class="set-desc" data-i18n="set.autostart.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-autostart" /><span></span></label></div></div>
+        <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.autoconnect.t"></div><div class="set-desc" data-i18n="set.autoconnect.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-autoconnect" /><span></span></label></div></div>
+        <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.startup.t"></div><div class="set-desc" data-i18n="set.startup.d"></div></div><div class="set-ctl"><select id="set-startup"><option value="last" data-i18n="set.startup.last"></option><option value="system_proxy" data-i18n="mode.proxy"></option><option value="proxy" data-i18n="mode.proxyOnly"></option><option value="tun" data-i18n="mode.tun"></option></select></div></div>
       </div>
       <div class="card set-card">
         <h2 data-i18n="sec.connection"></h2>
@@ -206,8 +206,8 @@
       </div>
       <div class="card set-card">
         <h2 data-i18n="sec.tun"></h2>
-        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.tunstack.t"></div><div class="set-desc" data-i18n="set.tunstack.d"></div></div><div class="set-ctl"><select id="set-tunstack"><option value="singbox" data-i18n="settings.tunSingbox"></option><option value="native" data-i18n="settings.tunNative"></option></select></div></div>
-        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.dnsleak.t"></div><div class="set-desc" data-i18n="set.dnsleak.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-dnsleak" /><span></span></label></div></div>
+        <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.tunstack.t"></div><div class="set-desc" data-i18n="set.tunstack.d"></div></div><div class="set-ctl"><select id="set-tunstack"><option value="singbox" data-i18n="settings.tunSingbox"></option><option value="native" data-i18n="settings.tunNative"></option></select></div></div>
+        <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.dnsleak.t"></div><div class="set-desc" data-i18n="set.dnsleak.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-dnsleak" /><span></span></label></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.quic.t"></div><div class="set-desc" data-i18n="set.quic.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-quic" /><span></span></label></div></div>
       </div>
       <div class="card set-card">

@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Mosaic</string>
+    <string name="channel_name">VPN status</string>
+    <string name="notif_vpn">Connected · VPN</string>
+    <string name="notif_proxy">Connected · local proxy 127.0.0.1:%1$d</string>
+    <string name="notif_text">Tap to open Mosaic</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="no_permission">VPN permission was not granted</string>
+</resources>

@@ -1,0 +1,71 @@
+name: android
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+
+      - name: Unit tests (core, Linux)
+        run: cargo test -p mosaic-core --features native-tun
+
+      - name: Build the Rust core for Android (arm64)
+        run: |
+          cargo install cargo-ndk --locked
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build --release -p mosaic-android
+          ls -la android/app/src/main/jniLibs/arm64-v8a
+
+      - name: Download engines and geo files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/get-engines-android.sh
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Signing key (optional)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/mosaic.jks"
+            echo "MOSAIC_KEYSTORE=$RUNNER_TEMP/mosaic.jks" >> "$GITHUB_ENV"
+          else
+            echo "No ANDROID_KEYSTORE_B64 secret: the APK is signed with a throwaway debug key."
+          fi
+
+      - name: Build APK
+        working-directory: android
+        env:
+          MOSAIC_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MOSAIC_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MOSAIC_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          gradle --no-daemon assembleRelease
+          ver=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          mkdir -p ../out
+          cp app/build/outputs/apk/release/app-release.apk "../out/Mosaic_${ver}_android-arm64.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mosaic-android-arm64
+          path: out/*.apk

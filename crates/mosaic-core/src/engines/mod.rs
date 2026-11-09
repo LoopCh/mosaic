@@ -29,6 +29,10 @@ pub fn search_dirs() -> Vec<PathBuf> {
     if let Ok(d) = std::env::var("MOSAIC_ENGINES") {
         v.push(PathBuf::from(d));
     }
+    // Data files (geoip.dat / geosite.dat) when they are kept apart from the binaries (Android).
+    if let Ok(d) = std::env::var("MOSAIC_ASSETS") {
+        v.push(PathBuf::from(d));
+    }
     v.push(updated_dir());
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -52,6 +56,15 @@ pub fn search_dirs() -> Vec<PathBuf> {
 /// Where engine updates are installed (%APPDATA%\Mosaic\engines on Windows).
 pub fn updated_dir() -> PathBuf {
     crate::store::data_dir().join("engines")
+}
+
+/// Engines can be updated from the app (not on Android: apps may not execute downloaded files).
+pub const UPDATABLE: bool = !cfg!(target_os = "android");
+
+/// True if engines updated from the app are installed (and override the bundled ones).
+pub fn has_updates() -> bool {
+    let d = updated_dir();
+    EngineKind::ALL.iter().any(|k| d.join(k.exe_name()).is_file())
 }
 
 pub fn find(kind: EngineKind) -> Option<PathBuf> {

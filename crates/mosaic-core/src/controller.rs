@@ -101,6 +101,12 @@ pub struct Snapshot {
     pub lan_ip: Option<String>,
     pub geoip_file: Option<String>,
     pub geosite_file: Option<String>,
+    /// "windows", "android", "linux", "macos" — the UI hides what does not apply.
+    pub platform: &'static str,
+    /// Engines can be updated from the app on this platform.
+    pub engine_updates: bool,
+    /// Updated engines are installed (so "restore bundled versions" makes sense).
+    pub engines_updated: bool,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -174,6 +180,8 @@ pub struct Controller {
     /// Ask the background loop for an immediate Smart Connect test.
     smart_kick: AtomicBool,
     app_update: std::sync::Mutex<Option<AppUpdate>>,
+    /// Android: the VPN interface handed over by VpnService for the next TUN connect.
+    tun_fd: std::sync::Mutex<Option<i32>>,
     dir: PathBuf,
     admin: bool,
 }
@@ -227,6 +235,22 @@ fn server_domains(nodes: &[Node]) -> Vec<String> {
 }
 
 /// Address of the interface used for the default route (no packets are sent).
+/// `n` with its server replaced by `ip`; the name stays in SNI / Host where it was implied.
+fn pin_node(mut n: Node, ip: String) -> Node {
+    let name = std::mem::replace(&mut n.server, ip);
+    match &mut n.security {
+        Security::Tls { sni, .. } | Security::Reality { sni, .. } if sni.is_empty() => *sni = name.clone(),
+        _ => {}
+    }
+    match &mut n.transport {
+        Transport::Ws { host, .. } | Transport::Httpupgrade { host, .. } | Transport::Xhttp { host, .. } if host.is_empty() => {
+            *host = name.clone()
+        }
+        _ => {}
+    }
+    n
+}
+
 fn lan_ip() -> Option<String> {
     let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     s.connect("192.0.2.1:9").ok()?;
@@ -299,13 +323,47 @@ impl Controller {
             close_to_tray,
             smart_kick: AtomicBool::new(true),
             app_update: std::sync::Mutex::new(None),
+            tun_fd: std::sync::Mutex::new(None),
             dir,
-            admin: sys::is_admin(),
+            // Android: the VPN permission dialog replaces administrator rights.
+            admin: sys::is_admin() || cfg!(target_os = "android"),
         }
     }
 
     pub fn is_admin(&self) -> bool {
         self.admin
+    }
+
+    /// Android: hand over the VPN interface (from VpnService.Builder.establish().detachFd())
+    /// used by the next TUN connect. Mosaic owns and closes it.
+    /// Returns the previous descriptor if it was never used.
+    pub fn set_tun_fd(&self, fd: Option<i32>) -> Option<i32> {
+        std::mem::replace(&mut *self.tun_fd.lock().unwrap(), fd)
+    }
+
+    /// Android: Go engines cannot use the system resolver there, so node servers
+    /// are resolved by Mosaic and handed to the engines as IP addresses
+    /// (with the original name kept for TLS SNI and HTTP Host).
+    async fn pin_servers(&self, nodes: Vec<Node>, dns: &str) -> Vec<Node> {
+        let resolver = Resolver::udp_from_setting(dns);
+        let mut out = Vec::with_capacity(nodes.len());
+        for n in nodes {
+            if n.server.parse::<std::net::IpAddr>().is_ok() {
+                out.push(n);
+                continue;
+            }
+            match resolver.resolve(&n.server).await {
+                Ok(ips) if !ips.is_empty() => {
+                    let ip = ips.iter().find(|i| i.is_ipv4()).unwrap_or(&ips[0]).to_string();
+                    out.push(pin_node(n, ip));
+                }
+                Ok(_) | Err(_) => {
+                    self.logs.push(format!("[hub] cannot resolve {} — the engine will try itself", n.server));
+                    out.push(n);
+                }
+            }
+        }
+        out
     }
 
     pub async fn settings(&self) -> Settings {
@@ -440,6 +498,9 @@ impl Controller {
             lan_ip: if st.settings.allow_lan { lan_ip() } else { None },
             geoip_file,
             geosite_file,
+            platform: std::env::consts::OS,
+            engine_updates: engines::UPDATABLE,
+            engines_updated: engines::UPDATABLE && engines::has_updates(),
         }
     }
 
@@ -665,6 +726,9 @@ impl Controller {
 
     pub async fn check_engine_updates(&self) -> Vec<EngineUpdate> {
         let mut out = Vec::new();
+        if !engines::UPDATABLE {
+            return out;
+        }
         for kind in EngineKind::ALL {
             let current = match engines::find(kind) {
                 Some(exe) => process::version(&exe).await,
@@ -708,6 +772,9 @@ impl Controller {
     /// in → checked with your nodes (and reconnected if you were connected).
     /// Any failure restores the previous version.
     pub async fn update_engine(&self, kind: EngineKind) -> Result<String, String> {
+        if !engines::UPDATABLE {
+            return Err("engines are updated together with the app on this platform".into());
+        }
         let staging = self.dir.join("engines.staging").join(kind.slug());
         let backup = self.dir.join("engines.bak").join(kind.slug());
         let target = engines::updated_dir();
@@ -746,6 +813,9 @@ impl Controller {
 
     /// Forget all updated engines and use the ones shipped with Mosaic.
     pub async fn reset_engines(&self) -> Result<(), String> {
+        if !engines::UPDATABLE {
+            return Ok(());
+        }
         let was_connected = self.is_connected().await;
         if was_connected {
             self.disconnect().await;
@@ -1038,7 +1108,15 @@ impl Controller {
             return Err("Add a node or a subscription first".into());
         }
         fix_selection(&mut g.state);
-        let settings = g.state.settings.clone();
+        let mut settings = g.state.settings.clone();
+        if cfg!(target_os = "android") {
+            // Android: the TUN is always Mosaic's own stack on the VpnService interface,
+            // and there is no system proxy to set.
+            settings.tun_stack = TunStack::Native;
+            if settings.mode == Mode::SystemProxy {
+                settings.mode = Mode::Tun;
+            }
+        }
         let tun = settings.mode == Mode::Tun;
         if tun && !self.admin {
             return Err("TUN mode requires running Mosaic as administrator".into());
@@ -1048,7 +1126,9 @@ impl Controller {
         }
         self.logs.push("[hub] connecting…");
         let nodes = g.state.nodes.clone();
-        let (engine_procs, upstreams) = self.start_engines(&nodes).await?;
+        let engine_nodes =
+            if cfg!(target_os = "android") { self.pin_servers(nodes.clone(), &settings.direct_dns).await } else { nodes.clone() };
+        let (engine_procs, upstreams) = self.start_engines(&engine_nodes).await?;
         let selected = g.state.selected.clone();
         let direct_port = if tun && settings.tun_stack == TunStack::Singbox {
             match process::alloc_ports(1) {
@@ -1187,6 +1267,7 @@ impl Controller {
             server_domains: server_domains(nodes),
             server_ips: nodes.iter().filter_map(|n| n.server.parse().ok()).collect(),
             resolver: s.resolver.clone(),
+            fd: self.tun_fd.lock().unwrap().take(),
             routing: s.hub.shared(),
             stats: self.stats.clone(),
             logs: self.logs.clone(),

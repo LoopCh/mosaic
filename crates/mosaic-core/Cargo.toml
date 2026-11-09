@@ -1,6 +1,6 @@
 [package]
 name = "mosaic-core"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Mosaic hub: unified config model, routing and engine orchestration"
@@ -13,9 +13,11 @@ ureq = "2.10"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
-# Experimental native TUN stack (Windows first). Off by default so the stable
-# build never depends on it: cargo build --features mosaic-core/native-tun
+# Mosaic's own TUN stack: wintun on Windows, a VpnService file descriptor on Android.
 ipstack = { version = "1.0", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 wintun = { version = "0.5", optional = true }

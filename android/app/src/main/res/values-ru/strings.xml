@@ -1,0 +1,8 @@
+<resources>
+    <string name="channel_name">Состояние VPN</string>
+    <string name="notif_vpn">Подключено · VPN</string>
+    <string name="notif_proxy">Подключено · локальный прокси 127.0.0.1:%1$d</string>
+    <string name="notif_text">Нажмите, чтобы открыть Mosaic</string>
+    <string name="disconnect">Отключить</string>
+    <string name="no_permission">Разрешение на VPN не выдано</string>
+</resources>

@@ -12,6 +12,17 @@ const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 let lang = 'en';
+// Platform: set from the first snapshot ("windows", "android", …). The UI hides what does not apply.
+const isAndroid = () => !!snap && snap.platform === 'android';
+// Android has no system proxy: the saved desktop default shows as VPN there.
+const uiMode = () => (isAndroid() && snap.settings.mode === 'system_proxy' ? 'tun' : snap.settings.mode);
+let platformApplied = false;
+function applyPlatform() {
+  if (platformApplied || !snap) return;
+  platformApplied = true;
+  document.documentElement.dataset.platform = snap.platform || 'windows';
+  applyI18n();
+}
 function pickLang(setting) {
   const want = setting && setting !== 'auto' ? setting : (navigator.language || 'en').slice(0, 2).toLowerCase();
   return window.I18N[want] ? want : 'en';
@@ -22,7 +33,7 @@ function t(key, ...args) {
 }
 function applyI18n() {
   document.documentElement.lang = lang;
-  $$('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
+  $$('[data-i18n]').forEach((el) => { el.textContent = t((isAndroid() && el.dataset.i18nAndroid) || el.dataset.i18n); });
   $$('[data-i18n-ph]').forEach((el) => { el.placeholder = t(el.dataset.i18nPh); });
 }
 
@@ -101,10 +112,12 @@ function renderUpdateBanner() {
   if (u) {
     $('#update-text').textContent = t('upd.available', u.version);
     $('#update-text').title = u.notes || '';
-    $('#update-install').disabled = !u.installer;
+    // No installer for this platform (Android): open the release page instead.
+    $('#update-install').textContent = u.installer ? t('upd.install') : t('upd.open');
   }
 }
 $('#update-install').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  if (!snap.app_update.installer) { await invoke('open_url', { url: snap.app_update.page }); return; }
   if (!confirm(t('upd.confirm', snap.app_update.version))) return;
   e.currentTarget.textContent = t('upd.downloading');
   await invoke('install_app_update');
@@ -116,6 +129,7 @@ async function poll() {
     snap = await invoke('snapshot');
     const l = pickLang(snap.settings.ui_language);
     if (l !== lang) { lang = l; rerenderAll(); }
+    applyPlatform();
     renderStatus(true);
     renderUpdateBanner();
     if (view === 'home') renderHome();
@@ -165,18 +179,21 @@ function renderHome() {
   power.classList.toggle('busy', connecting);
   $('#hero-state').textContent = connecting ? t('status.busy') : st.connected ? t('status.on') : t('status.off');
   if (st.connected) {
-    $('#hero-sub').textContent = st.tun
+    $('#hero-sub').textContent = st.tun && isAndroid() ? t('hero.viaVpn')
+      : st.tun
       ? (st.tun_stack === 'native' ? t('hero.viaTunNative') : t('hero.viaTun')) + ' · ' + (st.dns_protected ? t('hero.dnsOk') : t('hero.dnsOff'))
       : st.system_proxy ? t('hero.viaProxy', st.listen_port)
       : t('hero.viaPort', (st.lan ? (snap.lan_ip || t('hero.lanAddr')) : '127.0.0.1') + ':' + st.listen_port);
   } else {
     $('#hero-sub').textContent = snap.nodes.length ? t('hero.click') : t('hero.addNode');
   }
-  $$('#mode-seg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === snap.settings.mode));
+  const mode = uiMode();
+  $$('#mode-seg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
   const port = snap.settings.listen_port;
-  $('#mode-hint').textContent = snap.settings.mode === 'tun'
+  $('#mode-hint').textContent = mode === 'tun' && isAndroid() ? t('hint.vpn')
+    : mode === 'tun'
     ? (!snap.is_admin ? t('hint.tunAdmin') : snap.settings.tun_stack === 'native' ? t('hint.tunNative') : t('hint.tunSingbox'))
-    : snap.settings.mode === 'proxy' ? t('hint.proxyOnly', (snap.settings.allow_lan ? (snap.lan_ip || t('hero.lanAddr')) : '127.0.0.1') + ':' + port)
+    : mode === 'proxy' ? t('hint.proxyOnly', (snap.settings.allow_lan ? (snap.lan_ip || t('hero.lanAddr')) : '127.0.0.1') + ':' + port)
     : t('hint.proxy');
 
   const n = selectedNode();
@@ -245,7 +262,7 @@ $('#power').addEventListener('click', async () => {
 });
 
 $$('#mode-seg button').forEach((b) => b.addEventListener('click', async () => {
-  if (!snap || snap.settings.mode === b.dataset.mode) return;
+  if (!snap || uiMode() === b.dataset.mode) return;
   if (b.dataset.mode === 'tun' && !snap.is_admin) toast(t('toast.tunNeedsAdmin'), 'info', 7000);
   const s = { ...snap.settings, mode: b.dataset.mode };
   connecting = snap.status.connected;
@@ -487,6 +504,8 @@ let engineUpdates = {};
 let updatingKind = null;
 function renderEngines() {
   if (!snap) return;
+  $('#btn-engines-check').classList.toggle('hidden', !snap.engine_updates);
+  $('#btn-engines-reset').classList.toggle('hidden', !snap.engines_updated);
   $('#engine-grid').innerHTML = snap.engines.map((e) => {
     const supported = snap.nodes.filter((n) => n.supported.includes(e.kind)).length;
     const state = !e.path ? `<span class="state missing">${t('engines.missing')}</span>`

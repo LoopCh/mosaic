@@ -1,0 +1,16 @@
+[package]
+name = "mosaic-android"
+version = "0.5.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Mosaic for Android: the Rust core behind a JNI bridge"
+
+[lib]
+name = "mosaic"
+crate-type = ["cdylib"]
+
+[dependencies]
+mosaic-core = { path = "../mosaic-core", features = ["native-tun"] }
+jni = "0.21"
+tokio = { version = "1.40", features = ["rt-multi-thread"] }
+serde_json = "1"

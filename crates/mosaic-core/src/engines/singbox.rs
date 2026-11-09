@@ -30,7 +30,7 @@ pub fn compile(slots: &[Slot]) -> Result<Value, String> {
     }
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
     let mut cfg = json!({
-        "log": { "level": "warn", "timestamp": false },
+        "log": { "level": "warn", "timestamp": false, "disable_color": true },
         "dns": { "servers": [{ "type": "local", "tag": "local" }] },
         "inbounds": inbounds,
         "outbounds": outbounds,
@@ -195,6 +195,7 @@ pub fn compile_tun(
     direct_port: u16,
     exclude_processes: &[String],
     server_domains: &[String],
+    server_ips: &[std::net::IpAddr],
     direct_dns: &str,
     remote_dns: &str,
     block_quic: bool,
@@ -241,8 +242,19 @@ pub fn compile_tun(
         dns_rules.push(json!({ "domain": server_domains, "server": "direct-dns" }));
     }
     dns_rules.push(json!({ "query_type": ["A", "AAAA"], "server": "fakeip" }));
+    let mut tun = json!({
+        "type": "tun", "tag": "tun-in", "interface_name": "Mosaic",
+        "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+        "mtu": 9000, "auto_route": true, "strict_route": true, "stack": "mixed"
+    });
+    // Node servers bypass the TUN at the routing level: loop-free even when the
+    // process of an engine cannot be identified.
+    if !server_ips.is_empty() {
+        let cidrs: Vec<String> = server_ips.iter().map(|ip| if ip.is_ipv4() { format!("{ip}/32") } else { format!("{ip}/128") }).collect();
+        tun["route_exclude_address"] = json!(cidrs);
+    }
     json!({
-        "log": { "level": "warn", "timestamp": false },
+        "log": { "level": "warn", "timestamp": false, "disable_color": true },
         "dns": {
             "servers": [
                 { "type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18" },
@@ -253,11 +265,7 @@ pub fn compile_tun(
             "final": "remote"
         },
         "inbounds": [
-            {
-                "type": "tun", "tag": "tun-in", "interface_name": "Mosaic",
-                "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
-                "mtu": 9000, "auto_route": true, "strict_route": true, "stack": "mixed"
-            },
+            tun,
             { "type": "socks", "tag": "direct-in", "listen": "127.0.0.1", "listen_port": direct_port }
         ],
         "outbounds": outbounds,

@@ -138,6 +138,9 @@ struct Session {
     direct_port: Option<u16>,
     /// Node server domains (real DNS answers inside the TUN adapter).
     server_domains: Vec<String>,
+    /// Node server IPs (and the direct DNS server): routed around the TUN adapter, so the
+    /// engines reach their servers directly even if process detection fails (Linux).
+    server_ips: Vec<std::net::IpAddr>,
     geo: Arc<GeoData>,
     resolver: Arc<Resolver>,
     remote_cache: Arc<DnsCache>,
@@ -690,7 +693,7 @@ impl Controller {
             if let (Some(old), Some(dp)) = (s.front.take(), s.direct_port) {
                 old.stop().await;
                 let apps = app_rules(&inner.state, s);
-                match self.start_front(s.hub.port, dp, &s.server_domains, &inner.state.settings, &apps).await {
+                match self.start_front(s.hub.port, dp, &s.server_domains, &s.server_ips, &inner.state.settings, &apps).await {
                     Ok(p) => s.front = Some(p),
                     Err(e) => self.logs.push(format!("[hub] TUN adapter restart failed: {e}")),
                 }
@@ -1078,10 +1081,16 @@ impl Controller {
         hub_port: u16,
         direct_port: u16,
         domains: &[String],
+        server_ips: &[std::net::IpAddr],
         settings: &Settings,
         apps: &[(Vec<String>, singbox::FrontTarget)],
     ) -> Result<EngineProcess, String> {
-        let exe = engines::find(EngineKind::Singbox).ok_or("TUN mode needs sing-box in the engines folder")?;
+        let engine = engines::find(EngineKind::Singbox).ok_or("TUN mode needs sing-box in the engines folder")?;
+        // Linux: the adapter runs from its own copy that carries the TUN capability.
+        #[cfg(target_os = "linux")]
+        let exe = crate::linux::tun_binary(&engine, &engines::bundled_copy_dir())?;
+        #[cfg(not(target_os = "linux"))]
+        let exe = engine;
         let mut procs: Vec<String> = vec![EngineKind::Xray.exe_name().into(), EngineKind::Singbox.exe_name().into()];
         if let Some(name) = std::env::current_exe().ok().and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned())) {
             procs.push(name);
@@ -1089,7 +1098,7 @@ impl Controller {
         let dns = if settings.direct_dns.trim().is_empty() { "8.8.8.8" } else { settings.direct_dns.trim() };
         let dns = dns.split(':').next().unwrap_or("8.8.8.8");
         let remote = resolver::parse_dns_server(&settings.remote_dns, "1.1.1.1:53");
-        let cfg = singbox::compile_tun(hub_port, direct_port, &procs, domains, dns, &remote.ip().to_string(), settings.block_quic, apps);
+        let cfg = singbox::compile_tun(hub_port, direct_port, &procs, domains, server_ips, dns, &remote.ip().to_string(), settings.block_quic, apps);
         let path = self.write_config("tun", &cfg)?;
         let mut p = EngineProcess::spawn(EngineKind::Singbox, "tun", &exe, &path, self.logs.clone()).await?;
         if let Err(e) = p.wait_ports(&[direct_port], Duration::from_secs(8)).await {
@@ -1132,8 +1141,9 @@ impl Controller {
         if tun {
             // Linux: the sing-box TUN adapter, allowed to create the interface by a file capability.
             settings.tun_stack = TunStack::Singbox;
-            if !sys::is_admin() {
-                let exe = engines::find(EngineKind::Singbox).ok_or("TUN mode needs sing-box in the engines folder")?;
+            let engine = engines::find(EngineKind::Singbox).ok_or("TUN mode needs sing-box in the engines folder")?;
+            let exe = crate::linux::tun_binary(&engine, &engines::bundled_copy_dir())?;
+            if !sys::is_admin() && !crate::linux::has_caps(&exe) {
                 self.logs.push("[hub] asking for permission to create the TUN interface (one-time)…");
                 tokio::task::spawn_blocking(move || crate::linux::grant_tun(&exe))
                     .await
@@ -1149,8 +1159,14 @@ impl Controller {
         }
         self.logs.push("[hub] connecting…");
         let nodes = g.state.nodes.clone();
-        let engine_nodes =
-            if cfg!(target_os = "android") { self.pin_servers(nodes.clone(), &settings.direct_dns).await } else { nodes.clone() };
+        // Android always, Linux in TUN: engines get IP addresses (resolved here, before the TUN
+        // is up) — Go cannot use Android's DNS, and on Linux the TUN would answer with fake IPs.
+        let pin = cfg!(target_os = "android") || (cfg!(target_os = "linux") && tun);
+        let engine_nodes = if pin { self.pin_servers(nodes.clone(), &settings.direct_dns).await } else { nodes.clone() };
+        let mut server_ips: Vec<std::net::IpAddr> = engine_nodes.iter().filter_map(|n| n.server.parse().ok()).collect();
+        server_ips.push(resolver::parse_dns_server(&settings.direct_dns, "8.8.8.8:53").ip());
+        server_ips.sort();
+        server_ips.dedup();
         let (engine_procs, upstreams) = self.start_engines(&engine_nodes).await?;
         let selected = g.state.selected.clone();
         let direct_port = if tun && settings.tun_stack == TunStack::Singbox {
@@ -1199,6 +1215,7 @@ impl Controller {
             started_ms: now_ms(),
             direct_port,
             server_domains: server_domains(&nodes),
+            server_ips,
             geo,
             resolver,
             remote_cache: Arc::new(DnsCache::default()),
@@ -1241,7 +1258,7 @@ impl Controller {
             (Mode::Tun, TunStack::Singbox) => {
                 let dp = direct_port.unwrap_or(0);
                 let apps = app_rules(&g.state, &s);
-                match self.start_front(s.hub.port, dp, &s.server_domains, &settings, &apps).await {
+                match self.start_front(s.hub.port, dp, &s.server_domains, &s.server_ips, &settings, &apps).await {
                     Ok(p) => {
                         s.front = Some(p);
                         Ok(())

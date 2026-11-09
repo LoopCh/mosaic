@@ -150,6 +150,8 @@ pub fn install_bundled(dest: &Path) -> Vec<String> {
         let same = std::fs::metadata(&to)
             .map(|t| t.len() == m.len() && t.modified().ok() >= m.modified().ok())
             .unwrap_or(false);
+        // 0.7.0 put the TUN capability on the engine copy itself: replace it with a clean file.
+        let same = same && !(name == "sing-box" && has_caps(&to));
         if same {
             continue;
         }
@@ -168,6 +170,25 @@ pub fn install_bundled(dest: &Path) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------- TUN permission
+
+/// A separate copy of sing-box only for the TUN adapter: the capability goes to this
+/// file alone. (A process started from a file with capabilities becomes "non-dumpable",
+/// so the adapter could no longer see which program owns its sockets — that broke
+/// loop prevention for the sing-box engine when both shared one file.)
+pub fn tun_binary(engine: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let dst = dir.join("sing-box-tun");
+    let src_meta = std::fs::metadata(engine).map_err(|e| format!("{}: {e}", engine.display()))?;
+    let same = std::fs::metadata(&dst).map(|d| d.len() == src_meta.len() && d.modified().ok() >= src_meta.modified().ok()).unwrap_or(false);
+    if !same {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let tmp = dir.join(".sing-box-tun.tmp");
+        std::fs::copy(engine, &tmp).map_err(|e| e.to_string())?;
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+        std::fs::rename(&tmp, &dst).map_err(|e| e.to_string())?;
+    }
+    Ok(dst)
+}
 
 const CAPS: &str = "cap_net_admin,cap_net_raw,cap_net_bind_service+ep";
 

@@ -1,4 +1,4 @@
-# Mosaic 0.7
+# Mosaic 0.7.1
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -7,12 +7,23 @@ different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
 
+## New in 0.7.1
+
+- Linux TUN: node servers are now routed around the TUN (`route_exclude_address`) and engines get
+  their servers as IP addresses — engine traffic could loop back into the tunnel (seen as
+  `172.19.0.1 → server: connection reset` and zero download).
+- Linux TUN: the capability is set on a separate copy (`~/.config/mosaic/bin/sing-box-tun`), not on the
+  engine itself; a copy left with the capability by 0.7.0 is replaced automatically.
+- Cleaner logs: no Xray access log, no colour codes from sing-box.
+
 ## New in 0.7 — Linux
 
 - **Packages:** `.deb` (Debian, Ubuntu, Mint…), `.rpm` (Fedora, openSUSE…) and a portable `.AppImage`,
-  x86_64, built by `.github/workflows/linux.yml`; engines bundled. Plus a CLI archive.
+  x86_64, built by `.github/workflows/linux.yml`; engines bundled.
 - **System proxy** on GNOME-based desktops (gsettings) and KDE Plasma (kioslaverc). Elsewhere use
   the Proxy mode and set 127.0.0.1:7890 in apps.
+- CI and releases build only the app; the console client (`crates/mosaic-cli`) stays for development
+  (`cargo run -p mosaic-cli`).
 - **TUN** through the sing-box adapter, without running Mosaic as root: the first time, Mosaic asks
   for your password once (polkit) and gives its own copy of sing-box the `cap_net_admin` capability.
   Needs `setcap` (libcap2-bin / libcap) and `pkexec` (polkit) — present on regular desktops.
@@ -110,8 +121,8 @@ Keep `mosaic.jks` safe: an app signed with a lost key can never be updated.
 ### Releasing
 
 ```
-git tag v0.7.0
-git push origin v0.7.0
+git tag v0.7.1
+git push origin v0.7.1
 ```
 
 The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub

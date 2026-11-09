@@ -38,18 +38,12 @@ jobs:
         working-directory: app/src-tauri
         run: npx --yes @tauri-apps/cli@2 build --bundles deb,rpm,appimage
 
-      - name: Build CLI
-        run: cargo build --release -p mosaic-cli
-
       - name: Collect
         run: |
-          ver=$(jq -r .version app/src-tauri/tauri.conf.json)
           mkdir -p out
           cp target/release/bundle/deb/*.deb out/
           cp target/release/bundle/rpm/*.rpm out/
           cp target/release/bundle/appimage/*.AppImage out/
-          mkdir -p cli/mosaic-cli && cp target/release/mosaic-cli README.md cli/mosaic-cli/ && cp -r engines cli/mosaic-cli/
-          tar -czf "out/Mosaic_${ver}_linux-x64-cli.tar.gz" -C cli mosaic-cli
           ls -la out
 
       - uses: actions/upload-artifact@v4

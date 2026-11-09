@@ -24,14 +24,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/get-engines.ps1
 
-      - name: Build app and CLI
-        run: cargo build --release -p mosaic -p mosaic-cli
+      - name: Build app
+        run: cargo build --release -p mosaic
 
       - name: Package portable build
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/Mosaic | Out-Null
-          Copy-Item target/release/mosaic.exe, target/release/mosaic-cli.exe dist/Mosaic/
+          Copy-Item target/release/mosaic.exe dist/Mosaic/
           Copy-Item engines dist/Mosaic/engines -Recurse
           Copy-Item README.md dist/Mosaic/
           if (Test-Path LICENSE) { Copy-Item LICENSE dist/Mosaic/ }

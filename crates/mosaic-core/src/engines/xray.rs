@@ -33,7 +33,7 @@ pub fn compile(slots: &[Slot]) -> Result<Value, String> {
     }
     outbounds.push(json!({ "tag": "direct", "protocol": "freedom" }));
     Ok(json!({
-        "log": { "loglevel": "warning" },
+        "log": { "loglevel": "warning", "access": "none" },
         "inbounds": inbounds,
         "outbounds": outbounds,
         "routing": { "domainStrategy": "AsIs", "rules": rules }

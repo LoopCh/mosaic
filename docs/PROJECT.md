@@ -1,7 +1,7 @@
 # Mosaic — состояние проекта, архитектура и решения
 
 Документ для сохранения: что такое Mosaic, как он устроен, почему сделано именно так, что проверено,
-как собирать и выпускать, что дальше. Актуально на версию **0.7.0** (ноябрь 2026).
+как собирать и выпускать, что дальше. Актуально на версию **0.7.1** (ноябрь 2026).
 Репозиторий: https://github.com/LoopCh/mosaic · лицензия GPL-3.0-or-later.
 
 ---
@@ -119,7 +119,7 @@ crates/mosaic-core         вся логика (без UI)
   updates.rs               обновления ядер и приложения с GitHub (SHA-256, staging, откат)
   controller.rs            склейка: подключение, режимы, Smart Connect, фоновые задачи
   api.rs                   все команды UI одной JSON-точкой входа (для Android)
-crates/mosaic-cli          консольный клиент
+crates/mosaic-cli          консольный клиент (для разработки, в релизы не входит)
 crates/mosaic-android      JNI-библиотека libmosaic.so для Android
 app/src-tauri              настольное приложение (Tauri 2): окно, трей, single instance, команды
 app/ui                     интерфейс (HTML/CSS/JS без сборщика), i18n EN/RU, адаптивная вёрстка
@@ -170,11 +170,15 @@ scripts/                   загрузка ядер: get-engines.ps1 (Windows),
 
 ### Linux (0.7, собрано в CI, ждёт проверки)
 
-* `.deb`, `.rpm`, `.AppImage` (x86_64, ubuntu-22.04 → glibc 2.35+), архив CLI.
+* `.deb`, `.rpm`, `.AppImage` (x86_64, ubuntu-22.04 → glibc 2.35+).
 * Системный прокси: GNOME-совместимые (gsettings) и KDE Plasma; иначе режим «Прокси».
 * TUN: адаптер sing-box. Mosaic не запускается от root: при первом включении один запрос пароля
   (polkit/pkexec), который выполняет `setcap cap_net_admin,cap_net_raw,cap_net_bind_service+ep` на
   собственной копии sing-box в `~/.config/mosaic/bin`. Нативный стек на Linux пока не используется.
+* Защита от петли в TUN: серверы узлов исключены из маршрутов TUN (`route_exclude_address`), ядра
+  получают серверы как IP (резолв до подъёма TUN). Одного исключения по имени процесса на Linux мало:
+  процесс из файла с capability становится «non-dumpable», и адаптер не видит владельца его сокетов.
+  Поэтому capability стоит на отдельной копии `sing-box-tun`, а не на ядре.
 * Ядра копируются из пакета в `~/.config/mosaic/bin` (исполняемые, допускают capability); обновления
   ядер работают (tar.gz).
 * Правила по приложениям: в режимах прокси владелец из /proc (`/proc/net/tcp*` → inode → `/proc/*/fd`),
@@ -187,12 +191,12 @@ scripts/                   загрузка ядер: get-engines.ps1 (Windows),
 ## 5. Сборка и выпуск
 
 * **CI**: `windows.yml` (тесты + портативная сборка), `android.yml` (тесты ядра на Linux, библиотека
-  через cargo-ndk, APK), `linux.yml` (deb/rpm/AppImage/CLI). Артефакты — в разделе Artifacts запуска.
+  через cargo-ndk, APK), `linux.yml` (deb/rpm/AppImage). Артефакты — в разделе Artifacts запуска.
 * **Релиз**: поднять версию везде (`crates/*/Cargo.toml`, `app/src-tauri/Cargo.toml`,
   `tauri.conf.json`, `android/app/build.gradle.kts` — versionName и versionCode), затем
   `git tag vX.Y.Z && git push origin main vX.Y.Z`. `release.yml` проверяет, что тег совпадает с версией,
   собирает Windows (setup.exe, zip, SHA256SUMS), Android (APK, SHA256SUMS-android), Linux
-  (deb/rpm/AppImage/CLI, SHA256SUMS-linux) и публикует релиз. Если тег уже был — `git tag -f` +
+  (deb/rpm/AppImage, SHA256SUMS-linux) и публикует релиз. Если тег уже был — `git tag -f` +
   `git push -f origin vX.Y.Z`, старый релиз удалить на GitHub.
 * **Подпись Android**: секреты `ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASSWORD`,
   `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Ключ создаётся `keytool` (есть в Java Android
@@ -229,7 +233,7 @@ scripts/                   загрузка ядер: get-engines.ps1 (Windows),
 | 0.5.1 | свои диалоги подтверждения (системный confirm() не работает в WebView — не удалялись подписки), мобильные карточки |
 | 0.6 | выбор приложений для VPN, плитка, автоподключение, «Постоянная VPN», QR и буфер, два числа задержки |
 | 0.6.1 | список приложений с ленивой загрузкой иконок (зависал), правила по приложениям на Android, убрано обновление внутри Android |
-| 0.7 | Linux: deb/rpm/AppImage, системный прокси GNOME/KDE, TUN через setcap, /proc для правил по приложениям, обновления ядер для Linux |
+| 0.7–0.7.1 | Linux: deb/rpm/AppImage, системный прокси GNOME/KDE, TUN через setcap, /proc для правил по приложениям, обновления ядер для Linux; 0.7.1 — исключение серверов узлов из TUN и отдельная копия sing-box для TUN (на Arch/Kali трафик ядра уходил обратно в туннель) |
 
 Ключевые решения и причины:
 

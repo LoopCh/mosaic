@@ -39,16 +39,13 @@ jobs:
         working-directory: app/src-tauri
         run: npx --yes @tauri-apps/cli@2 build
 
-      - name: Build CLI
-        run: cargo build --release -p mosaic-cli
-
       - name: Collect release files
         shell: pwsh
         run: |
           $ver = (Get-Content app/src-tauri/tauri.conf.json | ConvertFrom-Json).version
           New-Item -ItemType Directory -Force out, portable/Mosaic | Out-Null
           Copy-Item target/release/bundle/nsis/*-setup.exe out/
-          Copy-Item target/release/mosaic.exe, target/release/mosaic-cli.exe portable/Mosaic/
+          Copy-Item target/release/mosaic.exe portable/Mosaic/
           Copy-Item engines portable/Mosaic/engines -Recurse
           Copy-Item README.md portable/Mosaic/
           if (Test-Path LICENSE) { Copy-Item LICENSE portable/Mosaic/ }

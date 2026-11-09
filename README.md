@@ -1,4 +1,4 @@
-# Mosaic 0.7.4
+# Mosaic 0.7.5
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -6,6 +6,17 @@ that only carry traffic to servers. Rules can send different traffic to nodes on
 different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
+
+## New in 0.7.5
+
+- Windows DNS leak protection is **fail-closed**: if the filters cannot be installed, or a live check
+  shows that the system DNS does not go through the tunnel (a never-seen name must resolve to a fake IP
+  198.18.x.x), Mosaic does not connect and says why — instead of running with a DNS leak or no DNS.
+  DNS to the TUN's own DNS address (172.19.0.2) is always allowed in addition to the TUN adapter.
+- sing-box TUN adapter: if IPv6 is turned off in the system ("set ipv6 address: Element not found"),
+  it is restarted with IPv4 only instead of failing.
+- Native TUN (Windows, Android) logs what it sees every 5 s while traffic changes: packets in/out,
+  TCP/UDP flows, DNS queries and the first errors of failed flows — to find where traffic stops.
 
 ## New in 0.7.4
 
@@ -145,8 +156,8 @@ Keep `mosaic.jks` safe: an app signed with a lost key can never be updated.
 ### Releasing
 
 ```
-git tag v0.7.4
-git push origin v0.7.4
+git tag v0.7.5
+git push origin v0.7.5
 ```
 
 The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub

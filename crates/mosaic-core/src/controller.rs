@@ -1106,9 +1106,28 @@ impl Controller {
         let dns = if settings.direct_dns.trim().is_empty() { "8.8.8.8" } else { settings.direct_dns.trim() };
         let dns = dns.split(':').next().unwrap_or("8.8.8.8");
         let remote = resolver::parse_dns_server(&settings.remote_dns, "1.1.1.1:53");
-        let cfg = singbox::compile_tun(hub_port, direct_port, &procs, domains, server_ips, dns, &remote.ip().to_string(), settings.block_quic, apps);
-        let path = self.write_config("tun", &cfg)?;
-        let mut p = EngineProcess::spawn(EngineKind::Singbox, "tun", &exe, &path, self.logs.clone()).await?;
+        // With IPv6 turned off in the system, sing-box cannot give the interface its IPv6
+        // address ("set ipv6 address: Element not found") and exits: retry IPv4-only.
+        for ipv6 in [true, false] {
+            let cfg = singbox::compile_tun(hub_port, direct_port, &procs, domains, server_ips, dns, &remote.ip().to_string(), settings.block_quic, apps, ipv6);
+            let path = self.write_config("tun", &cfg)?;
+            match self.try_front(&exe, &path, direct_port).await {
+                Ok(p) => {
+                    let v = if ipv6 { "" } else { ", IPv4 only" };
+                    self.logs.push(format!("[hub] TUN interface 'Mosaic' is up (sing-box adapter{v})"));
+                    return Ok(p);
+                }
+                Err(e) if ipv6 && e.to_ascii_lowercase().contains("ipv6") => {
+                    self.logs.push("[hub] IPv6 is not available on this system — starting the TUN adapter with IPv4 only");
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err("TUN adapter failed to start".into())
+    }
+
+    async fn try_front(&self, exe: &std::path::Path, path: &std::path::Path, direct_port: u16) -> Result<EngineProcess, String> {
+        let mut p = EngineProcess::spawn(EngineKind::Singbox, "tun", exe, path, self.logs.clone()).await?;
         if let Err(e) = p.wait_ports(&[direct_port], Duration::from_secs(8)).await {
             tokio::time::sleep(Duration::from_millis(250)).await;
             let msg = self.engine_error(format!("TUN adapter failed to start: {e}"), "sing-box/tun");
@@ -1122,7 +1141,6 @@ impl Controller {
                 return Err(self.engine_error(format!("TUN adapter exited ({st})"), "sing-box/tun"));
             }
         }
-        self.logs.push("[hub] TUN interface 'Mosaic' is up (sing-box adapter)");
         Ok(p)
     }
 
@@ -1280,8 +1298,21 @@ impl Controller {
             self.teardown(s).await;
             return Err(e);
         }
+        // DNS leak protection is fail-closed: if it cannot be put in place, or the system's
+        // DNS does not go through the tunnel with it, there is no connection — a VPN that
+        // silently leaks DNS is worse than one that refuses to connect.
         if tun && settings.dns_leak_protection {
-            self.protect_dns(&mut s);
+            let checked = match self.protect_dns(&mut s) {
+                Ok(()) => self.check_tunnel_dns().await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = checked {
+                self.teardown(s).await;
+                return Err(format!(
+                    "{e}\n\nNot connected, so that DNS does not leak. To connect without this protection, turn off \
+                     “DNS leak protection” in Settings → TUN (not recommended)."
+                ));
+            }
         }
         self.stats.clear_closed();
         self.logs.push("[hub] connected");
@@ -1289,25 +1320,59 @@ impl Controller {
         Ok(())
     }
 
-    /// Block DNS that bypasses the tunnel (Windows WFP). Failure is logged, not fatal.
+    /// Block DNS that bypasses the tunnel (Windows WFP).
     #[cfg(windows)]
-    fn protect_dns(&self, s: &mut Session) {
+    fn protect_dns(&self, s: &mut Session) -> Result<(), String> {
         let mut apps: Vec<PathBuf> = EngineKind::ALL.iter().filter_map(|k| engines::find(*k)).collect();
         if let Ok(exe) = std::env::current_exe() {
             apps.push(exe);
         }
-        let res = crate::wfp::interface_index("Mosaic").and_then(|idx| crate::wfp::DnsGuard::install(idx, &apps));
-        match res {
-            Ok(g) => {
-                s.dns_guard = Some(g);
-                self.logs.push("[hub] DNS leak protection on: DNS outside the tunnel is blocked");
-            }
-            Err(e) => self.logs.push(format!("[hub] DNS leak protection could not be enabled: {e}")),
-        }
+        let idx = crate::wfp::interface_index("Mosaic").map_err(|e| format!("DNS leak protection could not be enabled: {e}"))?;
+        let g = crate::wfp::DnsGuard::install(Some(idx), &apps).map_err(|e| format!("DNS leak protection could not be enabled: {e}"))?;
+        s.dns_guard = Some(g);
+        self.logs.push("[hub] DNS leak protection on: DNS outside the tunnel is blocked");
+        Ok(())
     }
 
     #[cfg(not(windows))]
-    fn protect_dns(&self, _s: &mut Session) {}
+    fn protect_dns(&self, _s: &mut Session) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Ask the system resolver (as every app does) for a never-seen name. Through the tunnel
+    /// the answer is a fake IP (198.18.0.0/15); a real answer or none means DNS goes elsewhere
+    /// or does not work. Windows only: there Mosaic's own lookups also use the system DNS
+    /// service, so the test sees exactly what apps see.
+    #[cfg(windows)]
+    async fn check_tunnel_dns(&self) -> Result<(), String> {
+        let name = format!("mosaic-dns-check-{}.example.com", now_ms());
+        let mut last = String::new();
+        for _ in 0..4 {
+            match tokio::time::timeout(Duration::from_secs(4), tokio::net::lookup_host((name.as_str(), 80))).await {
+                Ok(Ok(addrs)) => {
+                    let ips: Vec<std::net::IpAddr> = addrs.map(|a| a.ip()).collect();
+                    let fake = |ip: &std::net::IpAddr| matches!(ip, std::net::IpAddr::V4(v4) if (u32::from(*v4) & 0xFFFE_0000) == 0xC612_0000);
+                    if ips.iter().any(fake) {
+                        self.logs.push("[hub] DNS check passed: system DNS goes through the tunnel");
+                        return Ok(());
+                    }
+                    if let Some(ip) = ips.first() {
+                        return Err(format!("DNS check failed: the system DNS answered from outside the tunnel ({ip}) — DNS would leak."));
+                    }
+                    last = "empty answer".into();
+                }
+                Ok(Err(e)) => last = e.to_string(),
+                Err(_) => last = "no answer within 4 s".into(),
+            }
+            tokio::time::sleep(Duration::from_millis(700)).await;
+        }
+        Err(format!("DNS check failed: names cannot be resolved in TUN mode ({last})."))
+    }
+
+    #[cfg(not(windows))]
+    async fn check_tunnel_dns(&self) -> Result<(), String> {
+        Ok(())
+    }
 
     #[cfg(feature = "native-tun")]
     async fn start_native(&self, s: &mut Session, nodes: &[Node]) -> Result<(), String> {

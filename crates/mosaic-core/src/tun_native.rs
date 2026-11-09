@@ -110,30 +110,105 @@ mod stack {
         real: HashMap<String, Vec<IpAddr>>,
     }
 
+    /// Packet and flow counters, logged every few seconds while traffic changes —
+    /// shows at a glance whether packets reach the stack, flows are accepted and replies go out.
+    #[derive(Default)]
+    pub struct Counters {
+        pub pkts_in: std::sync::atomic::AtomicU64,
+        pub pkts_out: std::sync::atomic::AtomicU64,
+        tcp: std::sync::atomic::AtomicU64,
+        udp: std::sync::atomic::AtomicU64,
+        dns: std::sync::atomic::AtomicU64,
+        errors: std::sync::atomic::AtomicU64,
+    }
+
+    /// The device with packet counting.
+    struct Counted<D> {
+        dev: D,
+        c: Arc<Counters>,
+    }
+
+    impl<D: AsyncRead + Unpin> AsyncRead for Counted<D> {
+        fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<io::Result<()>> {
+            let before = buf.filled().len();
+            let r = std::pin::Pin::new(&mut self.dev).poll_read(cx, buf);
+            if let std::task::Poll::Ready(Ok(())) = &r {
+                if buf.filled().len() > before {
+                    self.c.pkts_in.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            r
+        }
+    }
+
+    impl<D: AsyncWrite + Unpin> AsyncWrite for Counted<D> {
+        fn poll_write(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, data: &[u8]) -> std::task::Poll<io::Result<usize>> {
+            let r = std::pin::Pin::new(&mut self.dev).poll_write(cx, data);
+            if let std::task::Poll::Ready(Ok(_)) = &r {
+                self.c.pkts_out.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            r
+        }
+        fn poll_flush(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.dev).poll_flush(cx)
+        }
+        fn poll_shutdown(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.dev).poll_shutdown(cx)
+        }
+    }
+
     /// Run the userspace stack on `dev` until the task is aborted or the device fails.
     pub fn spawn<D>(dev: D, routing: SharedRouting, stats: Arc<Stats>, real: HashMap<String, Vec<IpAddr>>, logs: Arc<LogBuf>) -> JoinHandle<()>
     where
         D: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        use std::sync::atomic::Ordering::Relaxed;
+        let c = Arc::new(Counters::default());
         let mut cfg = IpStackConfig::default();
         cfg.mtu_unchecked(MTU);
-        let mut stack = IpStack::new(cfg, dev);
+        let mut stack = IpStack::new(cfg, Counted { dev, c: c.clone() });
         let dns_state = Arc::new(DnsState { fake: Mutex::new(FakeIpPool::default()), real });
         tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            let mut last = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
             loop {
-                match stack.accept().await {
+                let accepted = tokio::select! {
+                    a = stack.accept() => a,
+                    _ = tick.tick() => {
+                        let now = (c.pkts_in.load(Relaxed), c.pkts_out.load(Relaxed), c.tcp.load(Relaxed), c.udp.load(Relaxed), c.dns.load(Relaxed), c.errors.load(Relaxed));
+                        if now != last {
+                            logs.push(format!(
+                                "[tun] packets in {} / out {} · tcp flows {} · udp flows {} · dns {} · errors {}",
+                                now.0, now.1, now.2, now.3, now.4, now.5
+                            ));
+                            last = now;
+                        }
+                        continue;
+                    }
+                };
+                match accepted {
                     Ok(IpStackStream::Tcp(tcp)) => {
+                        c.tcp.fetch_add(1, Relaxed);
                         let (src, dst) = (tcp.local_addr(), tcp.peer_addr());
-                        let (r, s, d) = (routing.clone(), stats.clone(), dns_state.clone());
+                        let (r, s, d, c2, l) = (routing.clone(), stats.clone(), dns_state.clone(), c.clone(), logs.clone());
                         tokio::spawn(async move {
-                            let _ = handle_tcp(tcp, src, dst, r, s, d).await;
+                            if let Err(e) = handle_tcp(tcp, src, dst, r, s, d).await {
+                                if c2.errors.fetch_add(1, Relaxed) < 20 {
+                                    l.push(format!("[tun] tcp {src} → {dst}: {e}"));
+                                }
+                            }
                         });
                     }
                     Ok(IpStackStream::Udp(udp)) => {
                         let (src, dst) = (udp.local_addr(), udp.peer_addr());
-                        let (r, s, d) = (routing.clone(), stats.clone(), dns_state.clone());
+                        if dst.port() == 53 { c.dns.fetch_add(1, Relaxed); } else { c.udp.fetch_add(1, Relaxed); }
+                        let (r, s, d, c2, l) = (routing.clone(), stats.clone(), dns_state.clone(), c.clone(), logs.clone());
                         tokio::spawn(async move {
-                            let _ = handle_udp(udp, src, dst, r, s, d).await;
+                            if let Err(e) = handle_udp(udp, src, dst, r, s, d).await {
+                                if c2.errors.fetch_add(1, Relaxed) < 20 {
+                                    l.push(format!("[tun] udp {src} → {dst}: {e}"));
+                                }
+                            }
                         });
                     }
                     Ok(_) => {}

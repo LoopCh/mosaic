@@ -17,7 +17,7 @@ use std::ffi::c_void;
 use std::path::PathBuf;
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 struct Guid {
     d1: u32,
     d2: u16,
@@ -33,10 +33,12 @@ const LAYER_ALE_AUTH_CONNECT_V4: Guid = guid(0xc38d57d1, 0x05a7, 0x4c33, [0x90, 
 const LAYER_ALE_AUTH_CONNECT_V6: Guid = guid(0x4a72393b, 0x319f, 0x44bc, [0x84, 0xc3, 0xba, 0x54, 0xdc, 0xb3, 0xb6, 0xb4]);
 const CONDITION_IP_REMOTE_PORT: Guid = guid(0xc35a604d, 0xd22b, 0x4e1a, [0x91, 0xb4, 0x68, 0xf6, 0x74, 0xee, 0x67, 0x4b]);
 const CONDITION_ALE_APP_ID: Guid = guid(0xd78e1e87, 0x8644, 0x4ea5, [0x94, 0x37, 0xd8, 0x09, 0xec, 0xef, 0xc9, 0x71]);
+const CONDITION_IP_REMOTE_ADDRESS: Guid = guid(0xb235ae9a, 0x1d64, 0x49b8, [0xa4, 0x4c, 0x5f, 0xf3, 0xd9, 0x09, 0x50, 0x45]);
 const CONDITION_IP_LOCAL_INTERFACE: Guid = guid(0x4cd62a49, 0x59c3, 0x4969, [0xb7, 0xf3, 0xbd, 0xa5, 0xd3, 0x28, 0x90, 0xa4]);
 
 const FWP_UINT8: u32 = 1;
 const FWP_UINT16: u32 = 2;
+const FWP_UINT32: u32 = 3;
 const FWP_UINT64: u32 = 4;
 const FWP_BYTE_BLOB_TYPE: u32 = 12;
 const FWP_MATCH_EQUAL: u32 = 0;
@@ -181,9 +183,13 @@ impl Drop for AppId {
 impl DnsGuard {
     /// `tun_ifindex`: interface index of the TUN adapter. `apps`: executables
     /// allowed to send DNS anywhere (Mosaic and its engines).
-    pub fn install(tun_ifindex: u32, apps: &[PathBuf]) -> Result<DnsGuard, String> {
+    pub fn install(tun_ifindex: Option<u32>, apps: &[PathBuf]) -> Result<DnsGuard, String> {
         let mut luid: u64 = 0;
-        check(unsafe { ConvertInterfaceIndexToLuid(tun_ifindex, &mut luid) }, "interface LUID")?;
+        if let Some(idx) = tun_ifindex {
+            if unsafe { ConvertInterfaceIndexToLuid(idx, &mut luid) } != 0 {
+                luid = 0;
+            }
+        }
 
         let name = wide("Mosaic DNS leak protection");
         let session = Session0 {
@@ -251,11 +257,26 @@ impl DnsGuard {
                 ];
                 self.add_filter(layer, sublayer_key, 15, &conds, FWP_ACTION_PERMIT, name)?;
             }
-            let tun = [
-                Condition0 { field: CONDITION_IP_REMOTE_PORT, match_type: FWP_MATCH_EQUAL, value: Value { ty: FWP_UINT16, v: 53 } },
-                Condition0 { field: CONDITION_IP_LOCAL_INTERFACE, match_type: FWP_MATCH_EQUAL, value: Value { ty: FWP_UINT64, v: luid_ptr as u64 } },
-            ];
-            self.add_filter(layer, sublayer_key, 14, &tun, FWP_ACTION_PERMIT, name)?;
+            if luid != 0 {
+                let tun = [
+                    Condition0 { field: CONDITION_IP_REMOTE_PORT, match_type: FWP_MATCH_EQUAL, value: Value { ty: FWP_UINT16, v: 53 } },
+                    Condition0 { field: CONDITION_IP_LOCAL_INTERFACE, match_type: FWP_MATCH_EQUAL, value: Value { ty: FWP_UINT64, v: luid_ptr as u64 } },
+                ];
+                self.add_filter(layer, sublayer_key, 14, &tun, FWP_ACTION_PERMIT, name)?;
+            }
+            // DNS to the TUN's DNS address (172.19.0.2) is always allowed: it can only go into
+            // the tunnel, and it does not depend on finding the right adapter.
+            if layer == LAYER_ALE_AUTH_CONNECT_V4 {
+                let peer = [
+                    Condition0 { field: CONDITION_IP_REMOTE_PORT, match_type: FWP_MATCH_EQUAL, value: Value { ty: FWP_UINT16, v: 53 } },
+                    Condition0 {
+                        field: CONDITION_IP_REMOTE_ADDRESS,
+                        match_type: FWP_MATCH_EQUAL,
+                        value: Value { ty: FWP_UINT32, v: u32::from(std::net::Ipv4Addr::new(172, 19, 0, 2)) as u64 },
+                    },
+                ];
+                self.add_filter(layer, sublayer_key, 14, &peer, FWP_ACTION_PERMIT, name)?;
+            }
             self.add_filter(layer, sublayer_key, 10, std::slice::from_ref(&port53), FWP_ACTION_BLOCK, name)?;
         }
         drop(app_ids);

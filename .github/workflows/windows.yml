@@ -3,8 +3,26 @@ name: windows-build
 on:
   push:
     branches: ["**"]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'android/**'
+      - 'scripts/*.sh'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'android/**'
+      - 'scripts/*.sh'
   workflow_dispatch:
+
+# A newer push to the same branch cancels the run still in progress.
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
 
 jobs:
   build:
@@ -13,9 +31,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows
+          cache-on-failure: true
 
+      # --release: the tests reuse the dependencies compiled for the app build below.
       - name: Unit tests (core)
-        run: cargo test -p mosaic-core
+        run: cargo test --release -p mosaic-core
 
       # The app bundles .\engines, so it must exist before the build.
       - name: Download engines and geo files

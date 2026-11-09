@@ -200,6 +200,7 @@ pub fn compile_tun(
     remote_dns: &str,
     block_quic: bool,
     app_rules: &[(Vec<String>, FrontTarget)],
+    ipv6: bool,
 ) -> Value {
     let mut rules = vec![
         json!({ "inbound": ["direct-in"], "outbound": "direct" }),
@@ -246,9 +247,10 @@ pub fn compile_tun(
     // packets pass the INPUT firewall chain — ufw/firewalld (default on CachyOS, Fedora…)
     // drop them and nothing works. gVisor keeps the whole stack in userspace.
     let stack = if cfg!(target_os = "linux") { "gvisor" } else { "mixed" };
+    let addresses = if ipv6 { json!(["172.19.0.1/30", "fdfe:dcba:9876::1/126"]) } else { json!(["172.19.0.1/30"]) };
     let mut tun = json!({
         "type": "tun", "tag": "tun-in", "interface_name": "Mosaic",
-        "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+        "address": addresses,
         "mtu": 9000, "auto_route": true, "strict_route": true, "stack": stack
     });
     // Node servers bypass the TUN at the routing level: loop-free even when the

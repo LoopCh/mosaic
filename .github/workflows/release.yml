@@ -16,6 +16,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows
+          cache-on-failure: true
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -27,7 +30,7 @@ jobs:
           if ("v$ver" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match version $ver in tauri.conf.json" }
 
       - name: Unit tests (core)
-        run: cargo test -p mosaic-core
+        run: cargo test --release -p mosaic-core
 
       - name: Download engines and geo files
         shell: pwsh

@@ -3,9 +3,28 @@ name: linux
 on:
   push:
     branches: ["**"]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'android/**'
+      - 'scripts/get-engines.ps1'
+      - 'scripts/get-engines-android.sh'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'android/**'
+      - 'scripts/get-engines.ps1'
+      - 'scripts/get-engines-android.sh'
   workflow_dispatch:
   workflow_call:
+
+# A newer push to the same branch cancels the run still in progress.
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -16,7 +35,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: linux
+          shared-key: linux
+          cache-on-failure: true
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -26,8 +46,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev file rpm libfuse2
 
+      # --release: the tests reuse the dependencies compiled for the packages below.
       - name: Unit tests (core)
-        run: cargo test -p mosaic-core --features native-tun
+        run: cargo test --release -p mosaic-core --features native-tun
 
       - name: Download engines and geo files
         env:

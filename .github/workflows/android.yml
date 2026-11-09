@@ -3,9 +3,28 @@ name: android
 on:
   push:
     branches: ["**"]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'app/src-tauri/**'
+      - 'scripts/get-engines.ps1'
+      - 'scripts/get-engines-linux.sh'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'app/src-tauri/**'
+      - 'scripts/get-engines.ps1'
+      - 'scripts/get-engines-linux.sh'
   workflow_dispatch:
   workflow_call:
+
+# A newer push to the same branch cancels the run still in progress.
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   apk:
@@ -21,10 +40,8 @@ jobs:
           targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
-          key: android
-
-      - name: Unit tests (core, Linux)
-        run: cargo test -p mosaic-core --features native-tun
+          shared-key: android
+          cache-on-failure: true
 
       - name: Build the Rust core for Android (arm64)
         run: |

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -122,6 +122,8 @@ struct Session {
     started_ms: u64,
     /// sing-box adapter: SOCKS port used for the hub's "direct" traffic.
     direct_port: Option<u16>,
+    /// Node server domains (real DNS answers inside the TUN adapter).
+    server_domains: Vec<String>,
     geo: Arc<GeoData>,
     resolver: Arc<Resolver>,
     remote_cache: Arc<DnsCache>,
@@ -164,6 +166,8 @@ pub struct Controller {
     pub logs: Arc<LogBuf>,
     /// Mirrors `settings.close_to_tray` for the window event handler.
     pub close_to_tray: AtomicBool,
+    /// Ask the background loop for an immediate Smart Connect test.
+    smart_kick: AtomicBool,
     dir: PathBuf,
     admin: bool,
 }
@@ -182,6 +186,27 @@ fn routing_for(st: &State, s: &Session) -> Routing {
         ip_rule_dns: st.settings.ip_rule_dns,
         remote_cache: s.remote_cache.clone(),
     }
+}
+
+/// Per-application rules translated for the sing-box TUN adapter.
+fn app_rules(st: &State, s: &Session) -> Vec<(Vec<String>, singbox::FrontTarget)> {
+    st.rules
+        .iter()
+        .filter(|r| r.enabled && r.kind == RuleKind::ProcessName)
+        .map(|r| {
+            let names: Vec<String> = r.value.split(',').map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).collect();
+            let target = match r.target.as_str() {
+                "direct" => singbox::FrontTarget::Direct,
+                "block" => singbox::FrontTarget::Block,
+                "proxy" => singbox::FrontTarget::Hub,
+                other => match other.strip_prefix("node:").and_then(|id| s.upstreams.get(id)) {
+                    Some(u) => singbox::FrontTarget::Socks(u.port),
+                    None => singbox::FrontTarget::Block,
+                },
+            };
+            (names, target)
+        })
+        .collect()
 }
 
 fn server_domains(nodes: &[Node]) -> Vec<String> {
@@ -266,6 +291,7 @@ impl Controller {
             stats: Arc::new(Stats::default()),
             logs,
             close_to_tray,
+            smart_kick: AtomicBool::new(true),
             dir,
             admin: sys::is_admin(),
         }
@@ -523,10 +549,19 @@ impl Controller {
         self.save(&g.state);
     }
 
-    /// Instant switch: TCP and UDP both follow the routing table, so nothing restarts.
+    /// Manual choice of the active node. Turns Smart Connect off.
     pub async fn select_node(&self, id: &str) -> Result<(), String> {
+        self.select_inner(id, true).await
+    }
+
+    /// Instant switch: TCP and UDP both follow the routing table, so nothing restarts.
+    async fn select_inner(&self, id: &str, manual: bool) -> Result<(), String> {
         let mut g = self.inner.lock().await;
         let name = g.state.nodes.iter().find(|n| n.id == id).map(|n| n.name.clone()).ok_or("node not found")?;
+        if manual && g.state.settings.smart_connect {
+            g.state.settings.smart_connect = false;
+            self.logs.push("[smart] Smart Connect turned off: a node was chosen manually");
+        }
         g.state.selected = Some(id.to_string());
         self.save(&g.state);
         let inner = &mut *g;
@@ -572,6 +607,143 @@ impl Controller {
             s.geo = geo;
             s.hub.update(routing_for(&inner.state, s));
             self.logs.push("[hub] rules applied");
+            // The sing-box adapter carries the per-app rules: rebuild it.
+            if let (Some(old), Some(dp)) = (s.front.take(), s.direct_port) {
+                old.stop().await;
+                let apps = app_rules(&inner.state, s);
+                match self.start_front(s.hub.port, dp, &s.server_domains, &inner.state.settings, &apps).await {
+                    Ok(p) => s.front = Some(p),
+                    Err(e) => self.logs.push(format!("[hub] TUN adapter restart failed: {e}")),
+                }
+            }
+        }
+    }
+
+    /// Turn Smart Connect on or off (on: re-test right away).
+    pub async fn set_smart(&self, on: bool) {
+        let mut g = self.inner.lock().await;
+        g.state.settings.smart_connect = on;
+        self.save(&g.state);
+        self.smart_kick.store(on, Relaxed);
+        self.logs.push(if on { "[smart] Smart Connect on" } else { "[smart] Smart Connect off" });
+    }
+
+    // ------------------------------------------------------------ background work
+
+    /// Smart Connect and scheduled subscription refresh. Run once per process,
+    /// e.g. `tokio::spawn(ctl.clone().run_background())`.
+    pub async fn run_background(self: Arc<Self>) {
+        let mut tick: u64 = 0;
+        let mut fails = 0u32;
+        let mut last_full: Option<Instant> = None;
+        let mut sub_attempts: HashMap<String, Instant> = HashMap::new();
+        loop {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            tick += 1;
+            let settings = self.settings().await;
+
+            // Subscriptions: check every 10 minutes (and 10 s after start).
+            if settings.sub_update_hours > 0 && (tick == 1 || tick % 60 == 0) {
+                let max_age = settings.sub_update_hours as u64 * 3600 * 1000;
+                let subs: Vec<Subscription> = self.inner.lock().await.state.subscriptions.clone();
+                for sub in subs {
+                    let stale = now_ms().saturating_sub(sub.updated_ms) > max_age;
+                    let recently_tried = sub_attempts.get(&sub.url).map_or(false, |t| t.elapsed() < Duration::from_secs(3600));
+                    if stale && !recently_tried {
+                        sub_attempts.insert(sub.url.clone(), Instant::now());
+                        match self.update_subscription(&sub.url).await {
+                            Ok(r) => self.logs.push(format!("[subs] {} refreshed: {} new, {} updated", host_of(&sub.url), r.added, r.updated)),
+                            Err(e) => self.logs.push(format!("[subs] {}: {e}", host_of(&sub.url))),
+                        }
+                    }
+                }
+            }
+
+            if settings.smart_connect {
+                let kicked = self.smart_kick.swap(false, Relaxed);
+                if kicked {
+                    last_full = None;
+                    fails = 0;
+                }
+                self.smart_tick(&settings, tick, &mut fails, &mut last_full).await;
+            } else {
+                fails = 0;
+                last_full = None;
+            }
+        }
+    }
+
+    async fn smart_tick(&self, settings: &Settings, tick: u64, fails: &mut u32, last_full: &mut Option<Instant>) {
+        let (upstreams, selected) = {
+            let g = self.inner.lock().await;
+            match g.session.as_ref() {
+                Some(s) => (s.upstreams.clone(), g.state.selected.clone()),
+                None => return,
+            }
+        };
+        if upstreams.is_empty() {
+            return;
+        }
+        // Health check of the active node every 20 s.
+        let mut current_ms: Option<u32> = None;
+        if tick % 2 == 0 || last_full.is_none() {
+            if let Some(u) = selected.as_ref().and_then(|id| upstreams.get(id)) {
+                match hub::url_test(u.port, &settings.test_url).await {
+                    Ok(ms) => {
+                        *fails = 0;
+                        current_ms = Some(ms);
+                    }
+                    Err(_) => *fails += 1,
+                }
+            } else {
+                *fails = 2;
+            }
+        }
+        let full_due = last_full.map_or(true, |t| t.elapsed() >= Duration::from_secs(180));
+        if !(full_due || *fails >= 2) {
+            return;
+        }
+        *last_full = Some(Instant::now());
+        let mut set = JoinSet::new();
+        for (id, u) in &upstreams {
+            let (id, port, url) = (id.clone(), u.port, settings.test_url.clone());
+            set.spawn(async move { (id, hub::url_test(port, &url).await) });
+        }
+        let mut results: Vec<(String, Result<u32, String>)> = Vec::new();
+        while let Some(r) = set.join_next().await {
+            if let Ok(x) = r {
+                results.push(x);
+            }
+        }
+        let now = now_ms();
+        {
+            let mut g = self.inner.lock().await;
+            for (id, r) in &results {
+                let l = match r {
+                    Ok(ms) => Latency { ms: Some(*ms), error: None, at_ms: now },
+                    Err(e) => Latency { ms: None, error: Some(e.clone()), at_ms: now },
+                };
+                g.latency.insert(id.clone(), l);
+            }
+        }
+        let best = results.iter().filter_map(|(id, r)| r.as_ref().ok().map(|ms| (id.clone(), *ms))).min_by_key(|(_, ms)| *ms);
+        let Some((best_id, best_ms)) = best else {
+            self.logs.push("[smart] no node answered the test");
+            return;
+        };
+        let current = selected.as_ref().and_then(|id| results.iter().find(|(i, _)| i == id)).and_then(|(_, r)| r.as_ref().ok().copied());
+        let current = current.or(current_ms);
+        let switch = match current {
+            None => true,                                                   // active node is down
+            Some(cur) => *fails >= 2 || cur > best_ms + best_ms * 3 / 10 + 50, // clearly faster
+        };
+        if switch && selected.as_deref() != Some(best_id.as_str()) {
+            let name = upstreams.get(&best_id).map(|u| u.name.clone()).unwrap_or_default();
+            match self.select_inner(&best_id, false).await {
+                Ok(()) => self.logs.push(format!("[smart] switched to {name} ({best_ms} ms)")),
+                Err(e) => self.logs.push(format!("[smart] {e}")),
+            }
+            *fails = 0;
         }
     }
 
@@ -682,7 +854,14 @@ impl Controller {
         Ok((procs, upstreams))
     }
 
-    async fn start_front(&self, hub_port: u16, direct_port: u16, domains: &[String], settings: &Settings) -> Result<EngineProcess, String> {
+    async fn start_front(
+        &self,
+        hub_port: u16,
+        direct_port: u16,
+        domains: &[String],
+        settings: &Settings,
+        apps: &[(Vec<String>, singbox::FrontTarget)],
+    ) -> Result<EngineProcess, String> {
         let exe = engines::find(EngineKind::Singbox).ok_or("TUN mode needs sing-box in the engines folder")?;
         let mut procs: Vec<String> = vec![EngineKind::Xray.exe_name().into(), EngineKind::Singbox.exe_name().into()];
         if let Some(name) = std::env::current_exe().ok().and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned())) {
@@ -691,7 +870,7 @@ impl Controller {
         let dns = if settings.direct_dns.trim().is_empty() { "8.8.8.8" } else { settings.direct_dns.trim() };
         let dns = dns.split(':').next().unwrap_or("8.8.8.8");
         let remote = resolver::parse_dns_server(&settings.remote_dns, "1.1.1.1:53");
-        let cfg = singbox::compile_tun(hub_port, direct_port, &procs, domains, dns, &remote.ip().to_string(), settings.block_quic);
+        let cfg = singbox::compile_tun(hub_port, direct_port, &procs, domains, dns, &remote.ip().to_string(), settings.block_quic, apps);
         let path = self.write_config("tun", &cfg)?;
         let mut p = EngineProcess::spawn(EngineKind::Singbox, "tun", &exe, &path, self.logs.clone()).await?;
         if let Err(e) = p.wait_ports(&[direct_port], Duration::from_secs(8)).await {
@@ -777,6 +956,7 @@ impl Controller {
             system_proxy: false,
             started_ms: now_ms(),
             direct_port,
+            server_domains: server_domains(&nodes),
             geo,
             resolver,
             remote_cache: Arc::new(DnsCache::default()),
@@ -818,8 +998,8 @@ impl Controller {
             }
             (Mode::Tun, TunStack::Singbox) => {
                 let dp = direct_port.unwrap_or(0);
-                let domains = server_domains(&nodes);
-                match self.start_front(s.hub.port, dp, &domains, &settings).await {
+                let apps = app_rules(&g.state, &s);
+                match self.start_front(s.hub.port, dp, &s.server_domains, &settings, &apps).await {
                     Ok(p) => {
                         s.front = Some(p);
                         Ok(())

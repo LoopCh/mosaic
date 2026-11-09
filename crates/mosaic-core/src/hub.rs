@@ -16,7 +16,7 @@ use tokio::time::timeout;
 
 use crate::geo::GeoData;
 use crate::dns;
-use crate::model::{DomainStrategy, EngineKind, IpRuleDns, Rule};
+use crate::model::{DomainStrategy, EngineKind, IpRuleDns, Rule, RuleKind};
 use crate::resolver::{self, DnsCache, Resolver};
 use crate::rules;
 use crate::stats::{ConnEntry, Stats};
@@ -122,13 +122,19 @@ impl Routing {
         Ok(out)
     }
 
+    /// True if some enabled rule matches on the application name.
+    pub fn needs_process(&self) -> bool {
+        self.rules.iter().any(|r| r.enabled && r.kind == RuleKind::ProcessName)
+    }
+
     /// `resolved_ip` is set on the second pass after a NeedIp verdict.
-    pub fn decide(&self, host: &str, port: u16, resolved_ip: Option<IpAddr>) -> Verdict {
+    /// `process` is the application's executable name, when known.
+    pub fn decide(&self, host: &str, port: u16, resolved_ip: Option<IpAddr>, process: Option<&str>) -> Verdict {
         let h = host.to_ascii_lowercase();
         let literal: Option<IpAddr> = h.trim_matches(|c| c == '[' || c == ']').parse().ok();
         let ip = literal.or(resolved_ip);
         for (i, r) in self.rules.iter().enumerate() {
-            if r.enabled && rules::matches(r, &h, ip, port, &self.geo) {
+            if r.enabled && rules::matches(r, &h, ip, port, process, &self.geo) {
                 let mut v = r.value.clone();
                 if v.chars().count() > 40 {
                     v = v.chars().take(40).collect::<String>() + "…";
@@ -144,8 +150,8 @@ impl Routing {
     }
 
     /// Full decision including the resolve-and-retry step.
-    pub async fn decide_full(&self, host: &str, port: u16) -> (Decision, String) {
-        match self.decide(host, port, None) {
+    pub async fn decide_full(&self, host: &str, port: u16, process: Option<&str>) -> (Decision, String) {
+        match self.decide(host, port, None, process) {
             Verdict::Done(d, r) => (d, r),
             Verdict::NeedIp => {
                 let found = match self.ip_rule_dns {
@@ -153,7 +159,7 @@ impl Routing {
                     IpRuleDns::Local => self.resolver.resolve(host).await,
                 };
                 let ip = found.ok().and_then(|v| v.into_iter().next());
-                match self.decide(host, port, ip.or(Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)))) {
+                match self.decide(host, port, ip.or(Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED))), process) {
                     Verdict::Done(d, r) => (d, r),
                     Verdict::NeedIp => (self.target(&self.final_target), "final".into()),
                 }
@@ -246,20 +252,32 @@ pub(crate) fn other(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::Other, msg.into())
 }
 
+/// Executable name of the local application on the other end of `s`
+/// (shown in the connection journal and used by per-app rules).
+pub(crate) fn peer_process(s: &TcpStream, _routing: &Routing) -> Option<String> {
+    let peer = s.peer_addr().ok()?;
+    if !peer.ip().is_loopback() {
+        return None; // another device in the LAN
+    }
+    // Through the sing-box TUN adapter every connection comes from sing-box itself.
+    crate::procinfo::process_of(peer, crate::procinfo::Proto::Tcp).filter(|p| !p.starts_with("sing-box"))
+}
+
 async fn handle(mut s: TcpStream, shared: SharedRouting, stats: Arc<Stats>) -> io::Result<()> {
     let _ = s.set_nodelay(true);
     let first = s.read_u8().await?;
+    let process = peer_process(&s, &current(&shared));
     if first == 5 {
-        socks5(s, shared, &stats).await
+        socks5(s, shared, &stats, process).await
     } else {
         let routing = current(&shared);
-        http(s, first, &routing, &stats).await
+        http(s, first, &routing, &stats, process.as_deref()).await
     }
 }
 
 // ---------------------------------------------------------------- SOCKS5
 
-async fn socks5(mut s: TcpStream, shared: SharedRouting, stats: &Arc<Stats>) -> io::Result<()> {
+async fn socks5(mut s: TcpStream, shared: SharedRouting, stats: &Arc<Stats>, process: Option<String>) -> io::Result<()> {
     let n = s.read_u8().await? as usize;
     let mut methods = vec![0u8; n];
     s.read_exact(&mut methods).await?;
@@ -274,7 +292,7 @@ async fn socks5(mut s: TcpStream, shared: SharedRouting, stats: &Arc<Stats>) -> 
     match h[1] {
         1 => {
             let routing = current(&shared);
-            match connect_target(&host, port, &routing, stats).await {
+            match connect_target(&host, port, process.as_deref(), &routing, stats).await {
                 Ok((up, conn)) => {
                     s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
                     relay(s, up, conn, stats.clone()).await
@@ -286,7 +304,7 @@ async fn socks5(mut s: TcpStream, shared: SharedRouting, stats: &Arc<Stats>) -> 
                 }
             }
         }
-        3 => crate::udp::associate(s, shared, stats.clone()).await,
+        3 => crate::udp::associate(s, shared, stats.clone(), process).await,
         _ => {
             s.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
             Ok(())
@@ -391,7 +409,7 @@ pub(crate) fn split_hp(s: &str, default_port: u16) -> io::Result<(String, u16)> 
     }
 }
 
-async fn http(mut s: TcpStream, first: u8, routing: &Routing, stats: &Arc<Stats>) -> io::Result<()> {
+async fn http(mut s: TcpStream, first: u8, routing: &Routing, stats: &Arc<Stats>, process: Option<&str>) -> io::Result<()> {
     let mut buf = vec![first];
     let mut tmp = [0u8; 4096];
     let head_end = loop {
@@ -418,7 +436,7 @@ async fn http(mut s: TcpStream, first: u8, routing: &Routing, stats: &Arc<Stats>
 
     if method.eq_ignore_ascii_case("CONNECT") {
         let (host, port) = split_hp(&target, 443)?;
-        match connect_target(&host, port, routing, stats).await {
+        match connect_target(&host, port, process, routing, stats).await {
             Ok((mut up, conn)) => {
                 s.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
                 if !rest.is_empty() {
@@ -460,7 +478,7 @@ async fn http(mut s: TcpStream, first: u8, routing: &Routing, stats: &Arc<Stats>
         }
         // One request per upstream connection keeps the MVP simple and correct.
         new_head.push_str("Connection: close\r\n\r\n");
-        match connect_target(&host, port, routing, stats).await {
+        match connect_target(&host, port, process, routing, stats).await {
             Ok((mut up, conn)) => {
                 up.write_all(new_head.as_bytes()).await?;
                 up.write_all(&rest).await?;
@@ -479,10 +497,16 @@ async fn http(mut s: TcpStream, first: u8, routing: &Routing, stats: &Arc<Stats>
 
 /// Decide and open the outbound TCP connection for host:port. Registers the
 /// connection in the journal (closed immediately on failure or block).
-pub async fn connect_target(host: &str, port: u16, routing: &Routing, stats: &Arc<Stats>) -> io::Result<(TcpStream, Arc<ConnEntry>)> {
-    let (decision, rule) = routing.decide_full(host, port).await;
+pub async fn connect_target(
+    host: &str,
+    port: u16,
+    process: Option<&str>,
+    routing: &Routing,
+    stats: &Arc<Stats>,
+) -> io::Result<(TcpStream, Arc<ConnEntry>)> {
+    let (decision, rule) = routing.decide_full(host, port, process).await;
     let (outbound, engine) = outbound_label(&decision);
-    let conn = stats.open(host, port, "tcp", rule, outbound, engine);
+    let conn = stats.open(host, port, "tcp", process, rule, outbound, engine);
     let res = match decision {
         Decision::Block => Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked by rule")),
         Decision::Direct => {
@@ -611,11 +635,11 @@ mod tests {
     #[test]
     fn decide() {
         let r = table(DomainStrategy::AsIs);
-        assert!(matches!(done(r.decide("Shop.Example.DE", 443, None)).0, Decision::Direct));
-        assert!(matches!(done(r.decide("www.video.com", 443, None)).0, Decision::Via(ref u) if u.name == "B"));
-        assert!(matches!(done(r.decide("smtp.x.com", 25, None)).0, Decision::Block));
-        assert!(matches!(done(r.decide("192.0.2.9", 443, None)).0, Decision::Direct));
-        let (d, rule) = done(r.decide("example.com", 443, None));
+        assert!(matches!(done(r.decide("Shop.Example.DE", 443, None, None)).0, Decision::Direct));
+        assert!(matches!(done(r.decide("www.video.com", 443, None, None)).0, Decision::Via(ref u) if u.name == "B"));
+        assert!(matches!(done(r.decide("smtp.x.com", 25, None, None)).0, Decision::Block));
+        assert!(matches!(done(r.decide("192.0.2.9", 443, None, None)).0, Decision::Direct));
+        let (d, rule) = done(r.decide("example.com", 443, None, None));
         assert!(matches!(d, Decision::Via(ref u) if u.name == "A"));
         assert_eq!(rule, "final");
     }
@@ -623,11 +647,11 @@ mod tests {
     #[test]
     fn ip_if_non_match() {
         let r = table(DomainStrategy::IpIfNonMatch);
-        assert!(matches!(r.decide("example.com", 443, None), Verdict::NeedIp));
-        let (d, rule) = done(r.decide("example.com", 443, "192.0.2.10".parse().ok()));
+        assert!(matches!(r.decide("example.com", 443, None, None), Verdict::NeedIp));
+        let (d, rule) = done(r.decide("example.com", 443, "192.0.2.10".parse().ok(), None));
         assert!(matches!(d, Decision::Direct));
         assert!(rule.starts_with("#4"));
         // literal IPs never need resolving
-        assert!(matches!(r.decide("203.0.113.1", 443, None), Verdict::Done(..)));
+        assert!(matches!(r.decide("203.0.113.1", 443, None, None), Verdict::Done(..)));
     }
 }

@@ -1,6 +1,8 @@
 // No console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod single;
+
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
@@ -82,6 +84,12 @@ async fn set_settings(ctl: Ctl<'_>, settings: Settings) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn set_smart(ctl: Ctl<'_>, on: bool) -> Result<(), String> {
+    ctl.set_smart(on).await;
+    Ok(())
+}
+
+#[tauri::command]
 async fn test_latency(ctl: Ctl<'_>) -> Result<(), String> {
     ctl.test_latency().await
 }
@@ -104,6 +112,7 @@ async fn engine_versions(ctl: Ctl<'_>) -> Result<Vec<EngineVersion>, String> {
 // ------------------------------------------------------------------ tray
 
 struct Labels {
+    auto: &'static str,
     open: &'static str,
     connect: &'static str,
     disconnect: &'static str,
@@ -120,9 +129,9 @@ fn labels(ui_language: &str) -> Labels {
         _ => mosaic_core::sys::ui_lang_is_ru(),
     };
     if ru {
-        Labels { open: "Открыть Mosaic", connect: "Подключить", disconnect: "Отключить", nodes: "Узлы", quit: "Выход", on: "подключено", off: "отключено" }
+        Labels { auto: "Авто (самый быстрый)", open: "Открыть Mosaic", connect: "Подключить", disconnect: "Отключить", nodes: "Узлы", quit: "Выход", on: "подключено", off: "отключено" }
     } else {
-        Labels { open: "Open Mosaic", connect: "Connect", disconnect: "Disconnect", nodes: "Nodes", quit: "Quit", on: "connected", off: "disconnected" }
+        Labels { auto: "Auto (fastest)", open: "Open Mosaic", connect: "Connect", disconnect: "Disconnect", nodes: "Nodes", quit: "Quit", on: "connected", off: "disconnected" }
     }
 }
 
@@ -147,8 +156,11 @@ fn build_menu(app: &AppHandle, snap: &Snapshot) -> tauri::Result<Menu<Wry>> {
     menu.append(&MenuItem::with_id(app, "toggle", toggle, !snap.nodes.is_empty(), None::<&str>)?)?;
     if !snap.nodes.is_empty() {
         let sub = Submenu::with_id(app, "nodes", l.nodes, true)?;
+        let smart = snap.settings.smart_connect;
+        sub.append(&CheckMenuItem::with_id(app, "auto", l.auto, true, smart, None::<&str>)?)?;
+        sub.append(&PredefinedMenuItem::separator(app)?)?;
         for n in snap.nodes.iter().take(40) {
-            let checked = snap.selected.as_deref() == Some(n.node.id.as_str());
+            let checked = !smart && snap.selected.as_deref() == Some(n.node.id.as_str());
             let text = menu_text(&format!("{}  ·  {}", n.node.name, n.summary));
             sub.append(&CheckMenuItem::with_id(app, format!("node:{}", n.node.id), text, true, checked, None::<&str>)?)?;
         }
@@ -165,7 +177,8 @@ async fn refresh_tray(app: &AppHandle, ctl: &Controller, last: &str) -> String {
     let selected = snap.selected.clone().unwrap_or_default();
     let sel_name = snap.nodes.iter().find(|n| n.node.id == selected).map(|n| n.node.name.clone()).unwrap_or_default();
     let sig = format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
+        snap.settings.smart_connect,
         snap.status.connected,
         selected,
         snap.settings.ui_language,
@@ -195,6 +208,14 @@ fn on_menu(app: &AppHandle, id: &str) {
     match id {
         "show" => show_main(app),
         "quit" => app.exit(0),
+        "auto" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let on = !ctl.settings().await.smart_connect;
+                ctl.set_smart(on).await;
+                refresh_tray(&app, &ctl, "").await;
+            });
+        }
         "toggle" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
@@ -224,6 +245,8 @@ fn on_menu(app: &AppHandle, id: &str) {
 // ------------------------------------------------------------------ main
 
 fn main() {
+    // Another Mosaic is already running: it shows its window, we quit.
+    let Some(instance) = single::acquire() else { return };
     let ctl = Arc::new(Controller::load());
     let on_exit = ctl.clone();
     tauri::Builder::default()
@@ -241,13 +264,16 @@ fn main() {
             set_node_engine,
             set_rules,
             set_settings,
+            set_smart,
             test_latency,
             connections,
             logs,
             engine_versions
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
+            let for_second_launch = handle.clone();
+            single::listen(instance, move || show_main(&for_second_launch));
             // Autostart passes --minimized: stay in the tray.
             if !std::env::args().any(|a| a == "--minimized") {
                 show_main(&handle);
@@ -265,6 +291,8 @@ fn main() {
                 .build(app)?;
 
             let ctl = app.state::<Arc<Controller>>().inner().clone();
+            // Smart Connect + scheduled subscription refresh.
+            tauri::async_runtime::spawn(ctl.clone().run_background());
             tauri::async_runtime::spawn(async move {
                 if ctl.settings().await.auto_connect {
                     ctl.prepare_startup().await;

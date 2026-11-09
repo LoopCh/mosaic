@@ -234,17 +234,17 @@ mod win {
             loop {
                 match stack.accept().await {
                     Ok(IpStackStream::Tcp(tcp)) => {
-                        let dst = tcp.peer_addr();
+                        let (src, dst) = (tcp.local_addr(), tcp.peer_addr());
                         let (r, s, d) = (routing.clone(), stats.clone(), dns_state.clone());
                         tokio::spawn(async move {
-                            let _ = handle_tcp(tcp, dst, r, s, d).await;
+                            let _ = handle_tcp(tcp, src, dst, r, s, d).await;
                         });
                     }
                     Ok(IpStackStream::Udp(udp)) => {
-                        let dst = udp.peer_addr();
+                        let (src, dst) = (udp.local_addr(), udp.peer_addr());
                         let (r, s, d) = (routing.clone(), stats.clone(), dns_state.clone());
                         tokio::spawn(async move {
-                            let _ = handle_udp(udp, dst, r, s, d).await;
+                            let _ = handle_udp(udp, src, dst, r, s, d).await;
                         });
                     }
                     Ok(_) => {}
@@ -313,7 +313,19 @@ mod win {
         Some(dst.to_string())
     }
 
-    async fn handle_tcp<T>(mut tcp: T, dst: SocketAddr, routing: SharedRouting, stats: Arc<Stats>, dns: Arc<DnsState>) -> io::Result<()>
+    /// Application name for a flow from `src` (journal + per-app rules).
+    fn flow_process(src: SocketAddr, proto: crate::procinfo::Proto, _routing: &SharedRouting) -> Option<String> {
+        crate::procinfo::process_of(src, proto)
+    }
+
+    async fn handle_tcp<T>(
+        mut tcp: T,
+        src: SocketAddr,
+        dst: SocketAddr,
+        routing: SharedRouting,
+        stats: Arc<Stats>,
+        dns: Arc<DnsState>,
+    ) -> io::Result<()>
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -330,8 +342,9 @@ mod win {
                 first = buf;
             }
         }
+        let process = flow_process(src, crate::procinfo::Proto::Tcp, &routing);
         let r = current(&routing);
-        let (mut up, conn) = hub::connect_target(&host, dst.port(), &r, &stats).await?;
+        let (mut up, conn) = hub::connect_target(&host, dst.port(), process.as_deref(), &r, &stats).await?;
         if !first.is_empty() {
             up.write_all(&first).await?;
             stats.add(&conn, first.len() as u64, true);
@@ -339,7 +352,14 @@ mod win {
         hub::relay(tcp, up, conn, stats).await
     }
 
-    async fn handle_udp<U>(mut udp: U, dst: SocketAddr, routing: SharedRouting, stats: Arc<Stats>, dns: Arc<DnsState>) -> io::Result<()>
+    async fn handle_udp<U>(
+        mut udp: U,
+        src: SocketAddr,
+        dst: SocketAddr,
+        routing: SharedRouting,
+        stats: Arc<Stats>,
+        dns: Arc<DnsState>,
+    ) -> io::Result<()>
     where
         U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -347,7 +367,8 @@ mod win {
             return serve_dns(&mut udp, &dns, &routing).await;
         }
         let Some(host) = target_host(dst.ip(), &dns) else { return Ok(()) };
-        crate::udp::relay_flow(udp, host, dst.port(), current(&routing), stats).await
+        let process = flow_process(src, crate::procinfo::Proto::Udp, &routing);
+        crate::udp::relay_flow(udp, host, dst.port(), process, current(&routing), stats).await
     }
 
     /// Fake-IP DNS:

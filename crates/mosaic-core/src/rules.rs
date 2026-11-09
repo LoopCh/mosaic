@@ -32,9 +32,17 @@ pub fn geo_codes(rules: &[Rule]) -> (HashSet<String>, HashSet<String>) {
     (ip, site)
 }
 
+/// Process name as written in a rule matches the detected one ("Telegram" ≈ "telegram.exe").
+fn process_match(want: &str, got: Option<&str>) -> bool {
+    let Some(got) = got else { return false };
+    let want = want.to_ascii_lowercase();
+    got == want || got.strip_suffix(".exe") == Some(want.as_str())
+}
+
 /// `host` must already be lower-case. `ip` is the destination IP if known
-/// (the host itself, or a resolved address).
-pub fn matches(rule: &Rule, host: &str, ip: Option<IpAddr>, port: u16, geo: &GeoData) -> bool {
+/// (the host itself, or a resolved address). `process` is the lower-case
+/// executable name of the application, if known.
+pub fn matches(rule: &Rule, host: &str, ip: Option<IpAddr>, port: u16, process: Option<&str>, geo: &GeoData) -> bool {
     rule.value
         .split(',')
         .map(|v| v.trim())
@@ -50,6 +58,7 @@ pub fn matches(rule: &Rule, host: &str, ip: Option<IpAddr>, port: u16, geo: &Geo
             RuleKind::Port => port_match(v, port),
             RuleKind::Geoip => ip.map_or(false, |ip| geo.ip_contains(v, ip)),
             RuleKind::Geosite => geo.site_contains(v, host),
+            RuleKind::ProcessName => process_match(v, process),
         })
 }
 
@@ -105,33 +114,43 @@ mod tests {
     fn suffix() {
         let g = GeoData::default();
         let rule = r(RuleKind::DomainSuffix, ".ru, xn--p1ai");
-        assert!(matches(&rule, "yandex.ru", None, 443, &g));
-        assert!(matches(&rule, "ru", None, 443, &g));
-        assert!(matches(&rule, "xn--80ak6aa92e.xn--p1ai", None, 443, &g));
-        assert!(!matches(&rule, "guru", None, 443, &g));
-        assert!(!matches(&rule, "example.com", None, 443, &g));
+        assert!(matches(&rule, "yandex.ru", None, 443, None, &g));
+        assert!(matches(&rule, "ru", None, 443, None, &g));
+        assert!(matches(&rule, "xn--80ak6aa92e.xn--p1ai", None, 443, None, &g));
+        assert!(!matches(&rule, "guru", None, 443, None, &g));
+        assert!(!matches(&rule, "example.com", None, 443, None, &g));
     }
 
     #[test]
     fn cidr_and_port() {
         let g = GeoData::default();
         let rule = r(RuleKind::IpCidr, PRIVATE_CIDRS);
-        assert!(matches(&rule, "192.168.1.10", "192.168.1.10".parse().ok(), 80, &g));
-        assert!(matches(&rule, "fd12::1", "fd12::1".parse().ok(), 80, &g));
-        assert!(!matches(&rule, "8.8.8.8", "8.8.8.8".parse().ok(), 80, &g));
-        assert!(!matches(&rule, "example.com", None, 80, &g));
+        assert!(matches(&rule, "192.168.1.10", "192.168.1.10".parse().ok(), 80, None, &g));
+        assert!(matches(&rule, "fd12::1", "fd12::1".parse().ok(), 80, None, &g));
+        assert!(!matches(&rule, "8.8.8.8", "8.8.8.8".parse().ok(), 80, None, &g));
+        assert!(!matches(&rule, "example.com", None, 80, None, &g));
         assert!(cidr_contains("0.0.0.0/0", "1.2.3.4".parse().unwrap()));
         let p = r(RuleKind::Port, "22, 6000-7000");
-        assert!(matches(&p, "x", None, 22, &g));
-        assert!(matches(&p, "x", None, 6500, &g));
-        assert!(!matches(&p, "x", None, 443, &g));
+        assert!(matches(&p, "x", None, 22, None, &g));
+        assert!(matches(&p, "x", None, 6500, None, &g));
+        assert!(!matches(&p, "x", None, 443, None, &g));
+    }
+
+    #[test]
+    fn process_names() {
+        let g = GeoData::default();
+        let r = r(RuleKind::ProcessName, "Telegram, qbittorrent.exe");
+        assert!(matches(&r, "x", None, 1, Some("telegram.exe"), &g));
+        assert!(matches(&r, "x", None, 1, Some("qbittorrent.exe"), &g));
+        assert!(!matches(&r, "x", None, 1, Some("chrome.exe"), &g));
+        assert!(!matches(&r, "x", None, 1, None, &g));
     }
 
     #[test]
     fn keyword_and_exact() {
         let g = GeoData::default();
-        assert!(matches(&r(RuleKind::DomainKeyword, "google"), "www.google.com", None, 1, &g));
-        assert!(matches(&r(RuleKind::Domain, "Example.com"), "example.com", None, 1, &g));
-        assert!(!matches(&r(RuleKind::Domain, "example.com"), "a.example.com", None, 1, &g));
+        assert!(matches(&r(RuleKind::DomainKeyword, "google"), "www.google.com", None, 1, None, &g));
+        assert!(matches(&r(RuleKind::Domain, "Example.com"), "example.com", None, 1, None, &g));
+        assert!(!matches(&r(RuleKind::Domain, "example.com"), "a.example.com", None, 1, None, &g));
     }
 }

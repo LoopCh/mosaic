@@ -170,7 +170,7 @@ function renderHome() {
       <div class="flag">${esc(avatar(n.name))}</div>
       <div class="grow"><div class="title">${esc(n.name)}</div>
       <div class="sub">${esc(n.summary)} · ${esc(n.server)}:${n.port}</div></div>
-      ${engineBadge(n.effective)}
+      ${snap.settings.smart_connect ? `<span class="badge auto">${t('smart.badge')}</span>` : ''}${engineBadge(n.effective)}
       <span class="lat ${latClass(n)}">${lat}</span>
       <button class="btn" id="go-nodes">${t('home.change')}</button>`;
     $('#go-nodes').onclick = () => show('nodes');
@@ -246,10 +246,14 @@ function latClass(n) {
 
 function renderNodes() {
   const filter = $('#node-filter').value.trim().toLowerCase();
-  const key = JSON.stringify([lang, snap.selected, filter, snap.nodes.map((n) => [n.id, n.name, n.engine, n.effective, n.latency]), snap.subscriptions]);
+  const key = JSON.stringify([lang, snap.settings.smart_connect, snap.selected, filter, snap.nodes.map((n) => [n.id, n.name, n.engine, n.effective, n.latency]), snap.subscriptions]);
   if (key === nodesKey) return;
   nodesKey = key;
 
+  const smart = !!snap.settings.smart_connect;
+  $('#smart-toggle').checked = smart;
+  const active = selectedNode();
+  $('#smart-state').textContent = smart && active ? t('smart.active', active.name) : '';
   const locale = lang === 'ru' ? 'ru-RU' : undefined;
   $('#subs').innerHTML = snap.subscriptions.map((s) => `
     <div class="sub-chip ${s.last_error ? 'err' : ''}" title="${esc(s.url)}${s.last_error ? '\n' + esc(s.last_error) : ''}">
@@ -311,6 +315,11 @@ function renderNodes() {
 }
 
 $('#node-filter').addEventListener('input', () => renderNodes());
+$('#smart-toggle').addEventListener('change', (e) => withBusy(null, async () => {
+  await invoke('set_smart', { on: e.target.checked });
+  snap = await invoke('snapshot'); nodesKey = ''; renderNodes();
+  if (e.target.checked) toast(t('smart.on'), 'ok', 3500);
+}));
 $('#btn-import').addEventListener('click', () => { $('#import-panel').classList.toggle('hidden'); $('#import-text').focus(); });
 $('#import-paste').addEventListener('click', async () => {
   try { $('#import-text').value = await navigator.clipboard.readText(); }
@@ -344,7 +353,7 @@ $('#btn-update-subs').addEventListener('click', (e) => withBusy(e.currentTarget,
 }));
 
 // ------------------------------------------------------------------ rules
-const KINDS = ['domain_suffix', 'domain', 'domain_keyword', 'ip_cidr', 'geoip', 'geosite', 'port'];
+const KINDS = ['domain_suffix', 'domain', 'domain_keyword', 'process_name', 'ip_cidr', 'geoip', 'geosite', 'port'];
 const PRIVATE = '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,169.254.0.0/16,100.64.0.0/10,::1/128,fc00::/7,fe80::/10';
 // Country code → its country-code TLD where they differ.
 const CC_TLD = { GB: 'uk' };
@@ -363,7 +372,7 @@ function renderRules() {
     <div class="rule ${r.enabled ? '' : 'off'}" data-i="${i}">
       <input type="checkbox" class="r-on" ${r.enabled ? 'checked' : ''} title="${t('rules.on')}" />
       <select class="r-kind">${KINDS.map((k) => `<option value="${k}" ${k === r.kind ? 'selected' : ''}>${t('kind.' + k)}</option>`).join('')}</select>
-      <input type="text" class="r-val" value="${esc(r.value)}" placeholder="${t('rules.valuePh')}" />
+      <input type="text" class="r-val" value="${esc(r.value)}" placeholder="${r.kind === 'process_name' ? t('rules.processPh') : t('rules.valuePh')}" />
       <select class="r-target">${targetOptions(r.target)}</select>
       <button class="icon-btn r-up" title="${t('rules.up')}">↑</button>
       <button class="icon-btn r-down" title="${t('rules.down')}">↓</button>
@@ -374,7 +383,7 @@ function renderRules() {
     const i = +row.dataset.i;
     const r = rulesDraft.rules[i];
     $('.r-on', row).onchange = (e) => { r.enabled = e.target.checked; row.classList.toggle('off', !r.enabled); };
-    $('.r-kind', row).onchange = (e) => { r.kind = e.target.value; };
+    $('.r-kind', row).onchange = (e) => { r.kind = e.target.value; renderRules(); };
     $('.r-val', row).oninput = (e) => { r.value = e.target.value; };
     $('.r-target', row).onchange = (e) => { r.target = e.target.value; };
     $('.r-up', row).onclick = () => { if (i > 0) { rulesDraft.rules.splice(i - 1, 0, rulesDraft.rules.splice(i, 1)[0]); renderRules(); } };
@@ -440,7 +449,7 @@ function renderConns(list) {
   const now = Date.now();
   const rows = list
     .filter((c) => !activeOnly || c.ended_ms == null)
-    .filter((c) => !f || `${c.host}:${c.port} ${c.network} ${c.rule} ${c.outbound} ${c.engine || ''}`.toLowerCase().includes(f))
+    .filter((c) => !f || `${c.process || ''} ${c.host}:${c.port} ${c.network} ${c.rule} ${c.outbound} ${c.engine || ''}`.toLowerCase().includes(f))
     .slice(0, 400)
     .map((c) => {
       const out = c.outbound === 'direct' ? `<span class="badge direct">${t('conns.direct')}</span>`
@@ -449,10 +458,10 @@ function renderConns(list) {
       const dur = fmtDur((c.ended_ms || now) - c.started_ms);
       const net = c.network === 'udp' ? '<span class="net">UDP</span> ' : '';
       return `<tr class="${c.ended_ms ? 'closed' : ''} ${c.error ? 'err' : ''}" title="${esc(c.error || '')}">
-        <td>${net}${esc(c.host)}:${c.port}</td><td class="rule-cell">${esc(c.rule)}</td><td>${out}</td>
+        <td class="app-cell">${esc(c.process || '—')}</td><td>${net}${esc(c.host)}:${c.port}</td><td class="rule-cell">${esc(c.rule)}</td><td>${out}</td>
         <td class="num">${fmtBytes(c.up)}</td><td class="num">${fmtBytes(c.down)}</td><td class="num">${dur}</td></tr>`;
     });
-  $('#conn-table tbody').innerHTML = rows.join('') || `<tr><td colspan="6" class="muted">${t('conns.empty')}</td></tr>`;
+  $('#conn-table tbody').innerHTML = rows.join('') || `<tr><td colspan="7" class="muted">${t('conns.empty')}</td></tr>`;
 }
 
 // ------------------------------------------------------------------ engines
@@ -509,6 +518,7 @@ function renderSettings() {
   $('#set-iprule').value = s.ip_rule_dns || 'remote';
   $('#set-startup').value = s.startup_mode || 'last';
   $('#set-lan').checked = !!s.allow_lan;
+  $('#set-subs').value = String(s.sub_update_hours ?? 12);
   $('#set-testurl').value = s.test_url;
   $('#set-ua').value = s.user_agent;
   $('#set-dns').value = s.direct_dns || '';
@@ -533,6 +543,7 @@ $('#settings-save').addEventListener('click', (e) => withBusy(e.currentTarget, a
     ip_rule_dns: $('#set-iprule').value,
     startup_mode: $('#set-startup').value,
     allow_lan: $('#set-lan').checked,
+    sub_update_hours: parseInt($('#set-subs').value, 10) || 0,
     test_url: $('#set-testurl').value.trim(),
     user_agent: $('#set-ua').value.trim(),
     direct_dns: $('#set-dns').value.trim() || '8.8.8.8',

@@ -22,7 +22,10 @@ const HELP: &str = "mosaic-cli — Mosaic without the UI
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let ctl = Controller::load();
+    let ctl = std::sync::Arc::new(Controller::load());
+    if args.first().map(String::as_str) == Some("run") {
+        tokio::spawn(ctl.clone().run_background());
+    }
     let code = match run(&ctl, &args).await {
         Ok(()) => 0,
         Err(e) => {

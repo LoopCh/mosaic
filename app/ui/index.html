@@ -100,6 +100,11 @@
           <span class="muted small" id="import-hint"></span>
         </div>
       </div>
+      <div class="card smart" id="smart-card">
+        <label class="switch"><input type="checkbox" id="smart-toggle" /><span></span></label>
+        <div><div class="set-title" data-i18n="smart.title"></div><div class="set-desc" data-i18n="smart.desc"></div></div>
+        <div class="smart-state muted small" id="smart-state"></div>
+      </div>
       <div id="subs" class="subs"></div>
       <div class="filter-row">
         <input id="node-filter" data-i18n-ph="nodes.filterPh" />
@@ -146,7 +151,7 @@
       <p class="muted lead" data-i18n="conns.lead"></p>
       <div class="table-wrap">
         <table class="table" id="conn-table">
-          <thead><tr><th data-i18n="conns.dest"></th><th data-i18n="conns.rule"></th><th data-i18n="conns.out"></th><th class="num">↑</th><th class="num">↓</th><th class="num" data-i18n="conns.time"></th></tr></thead>
+          <thead><tr><th data-i18n="conns.app"></th><th data-i18n="conns.dest"></th><th data-i18n="conns.rule"></th><th data-i18n="conns.out"></th><th class="num">↑</th><th class="num">↓</th><th class="num" data-i18n="conns.time"></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -206,6 +211,7 @@
       </div>
       <div class="card set-card">
         <h2 data-i18n="sec.advanced"></h2>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.subs.t"></div><div class="set-desc" data-i18n="set.subs.d"></div></div><div class="set-ctl"><select id="set-subs"><option value="0" data-i18n="set.subs.off"></option><option value="6" data-i18n="set.subs.6"></option><option value="12" data-i18n="set.subs.12"></option><option value="24" data-i18n="set.subs.24"></option></select></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.testurl.t"></div><div class="set-desc" data-i18n="set.testurl.d"></div></div><div class="set-ctl"><input type="text" id="set-testurl" placeholder="http://www.gstatic.com/generate_204" /></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.ua.t"></div><div class="set-desc" data-i18n="set.ua.d"></div></div><div class="set-ctl"><input type="text" id="set-ua" placeholder="Mosaic/0.2" /></div></div>
       </div>

@@ -159,6 +159,37 @@ fn outbound(n: &Node) -> Result<Value, String> {
 /// domains therefore get real answers from `direct-dns`, and the hub's own
 /// "direct" connections enter through the `direct-in` SOCKS inbound so that
 /// sing-box resolves them instead of the system.
+/// Where the TUN adapter sends an application matched by a per-app rule.
+/// The adapter sees which program opened a connection; the hub does not.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FrontTarget {
+    Direct,
+    Block,
+    /// Hand over to the hub (its rules and the selected node decide).
+    Hub,
+    /// Straight to a node's engine SOCKS inbound.
+    Socks(u16),
+}
+
+/// Name variants sing-box may report for a Windows program ("Telegram" → "Telegram.exe", "telegram.exe" …).
+fn process_variants(names: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for n in names {
+        let n = n.trim();
+        if n.is_empty() {
+            continue;
+        }
+        let base = n.strip_suffix(".exe").or_else(|| n.strip_suffix(".EXE")).unwrap_or(n);
+        for v in [base.to_string(), format!("{base}.exe"), base.to_ascii_lowercase(), format!("{}.exe", base.to_ascii_lowercase())] {
+            if !out.contains(&v) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn compile_tun(
     hub_port: u16,
     direct_port: u16,
@@ -167,6 +198,7 @@ pub fn compile_tun(
     direct_dns: &str,
     remote_dns: &str,
     block_quic: bool,
+    app_rules: &[(Vec<String>, FrontTarget)],
 ) -> Value {
     let mut rules = vec![
         json!({ "inbound": ["direct-in"], "outbound": "direct" }),
@@ -178,6 +210,29 @@ pub fn compile_tun(
             "outbound": "direct"
         }),
     ];
+    let mut outbounds = vec![
+        json!({ "type": "socks", "tag": "hub", "server": "127.0.0.1", "server_port": hub_port, "version": "5" }),
+        json!({ "type": "direct", "tag": "direct" }),
+    ];
+    for (names, target) in app_rules {
+        let names = process_variants(names);
+        if names.is_empty() {
+            continue;
+        }
+        let rule = match target {
+            FrontTarget::Direct => json!({ "process_name": names, "outbound": "direct" }),
+            FrontTarget::Block => json!({ "process_name": names, "action": "reject" }),
+            FrontTarget::Hub => json!({ "process_name": names, "outbound": "hub" }),
+            FrontTarget::Socks(port) => {
+                let tag = format!("node-{port}");
+                if !outbounds.iter().any(|o| o["tag"] == json!(tag.clone())) {
+                    outbounds.push(json!({ "type": "socks", "tag": tag.clone(), "server": "127.0.0.1", "server_port": port, "version": "5" }));
+                }
+                json!({ "process_name": names, "outbound": tag })
+            }
+        };
+        rules.push(rule);
+    }
     if block_quic {
         rules.push(json!({ "network": "udp", "port": 443, "action": "reject" }));
     }
@@ -205,10 +260,7 @@ pub fn compile_tun(
             },
             { "type": "socks", "tag": "direct-in", "listen": "127.0.0.1", "listen_port": direct_port }
         ],
-        "outbounds": [
-            { "type": "socks", "tag": "hub", "server": "127.0.0.1", "server_port": hub_port, "version": "5" },
-            { "type": "direct", "tag": "direct" }
-        ],
+        "outbounds": outbounds,
         "route": {
             "rules": rules,
             "final": "hub",

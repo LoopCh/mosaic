@@ -1,4 +1,4 @@
-# Mosaic 0.2.3
+# Mosaic 0.3
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -24,6 +24,19 @@ Interface languages: English, Русский (automatic, switchable in Settings)
   rules that block DNS (port 53) everywhere except the TUN interface; Mosaic and its engines are
   exempt. The WFP session is dynamic, so Windows removes the rules automatically even if Mosaic
   crashes. Toggle: Settings → “DNS leak protection”. Status is shown on the Home screen.
+
+## New in 0.3
+
+- **Smart Connect** (Nodes → switch, or tray → Nodes → Auto): keeps the fastest working node
+  selected. Checks the active node every 20 s and all nodes every 3 min; switches instantly when the
+  active node fails or another is clearly faster (>30 % + 50 ms). Choosing a node by hand turns it off.
+- **Per-application rules:** rule type “Application (.exe)”, e.g. `qbittorrent.exe → Direct`,
+  `telegram.exe → node X`. Works in system-proxy, proxy and native-TUN modes (owner of the socket
+  via the Windows IP helper tables). With the sing-box TUN adapter the rules are passed into the
+  adapter (targets Direct/Block/node; “Selected node” is handed to the hub).
+- **Connections show the application** that opened each connection.
+- **Scheduled subscription refresh:** every 6/12/24 h (Settings → Advanced), also checked at start.
+- **Single instance:** launching Mosaic again just opens the running window.
 
 ## New in 0.2.3
 

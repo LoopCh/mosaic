@@ -21,6 +21,7 @@ pub mod links;
 pub mod model;
 pub mod net;
 pub mod process;
+pub mod procinfo;
 pub mod resolver;
 pub mod rules;
 pub mod sniff;

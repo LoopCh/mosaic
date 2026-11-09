@@ -178,7 +178,7 @@ select { cursor: pointer; }
 .final { margin-left: auto; display: flex; gap: 10px; align-items: center; color: var(--muted); }
 
 /* ---------- tables */
-.table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: auto; }
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel-2); position: sticky; top: 0; }
 .table td { padding: 8px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
@@ -245,3 +245,12 @@ select { cursor: pointer; }
 .switch input:checked + span { background: var(--accent); }
 .switch input:checked + span::after { transform: translateX(18px); background: white; }
 .switch input:focus-visible + span { box-shadow: 0 0 0 3px rgba(124, 92, 255, .35); }
+
+/* ---------- 0.3 */
+.smart { display: flex; align-items: center; gap: 16px; padding: 14px 18px; margin-bottom: 14px; }
+.smart > div:nth-child(2) { flex: 1; }
+.smart-state { text-align: right; max-width: 260px; }
+.badge.auto { background: rgba(52, 211, 153, .14); color: var(--good); margin-right: 6px; }
+.app-cell { color: var(--muted); max-width: 160px; }
+.table td { max-width: 240px; }
+.table .rule-cell { max-width: 200px; }

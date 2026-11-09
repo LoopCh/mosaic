@@ -15,6 +15,7 @@ pub struct ConnEntry {
     pub host: String,
     pub port: u16,
     pub network: &'static str,
+    pub process: Option<String>,
     pub rule: String,
     pub outbound: String,
     pub engine: Option<String>,
@@ -29,6 +30,7 @@ pub struct ConnView {
     pub host: String,
     pub port: u16,
     pub network: &'static str,
+    pub process: Option<String>,
     pub rule: String,
     pub outbound: String,
     pub engine: Option<String>,
@@ -46,6 +48,7 @@ impl ConnEntry {
             host: self.host.clone(),
             port: self.port,
             network: self.network,
+            process: self.process.clone(),
             rule: self.rule.clone(),
             outbound: self.outbound.clone(),
             engine: self.engine.clone(),
@@ -68,12 +71,22 @@ pub struct Stats {
 }
 
 impl Stats {
-    pub fn open(&self, host: &str, port: u16, network: &'static str, rule: String, outbound: String, engine: Option<String>) -> Arc<ConnEntry> {
+    pub fn open(
+        &self,
+        host: &str,
+        port: u16,
+        network: &'static str,
+        process: Option<&str>,
+        rule: String,
+        outbound: String,
+        engine: Option<String>,
+    ) -> Arc<ConnEntry> {
         let e = Arc::new(ConnEntry {
             id: self.next_id.fetch_add(1, Relaxed) + 1,
             host: host.to_string(),
             port,
             network,
+            process: process.map(|p| p.to_string()),
             rule,
             outbound,
             engine,

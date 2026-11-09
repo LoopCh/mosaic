@@ -109,6 +109,7 @@ struct NodeOut {
 type Reverse = Arc<Mutex<HashMap<SocketAddr, (String, u16, Arc<ConnEntry>)>>>;
 
 struct Session {
+    process: Option<String>,
     client_sock: Arc<UdpSocket>,
     client: Option<SocketAddr>,
     shared: SharedRouting,
@@ -120,7 +121,7 @@ struct Session {
     reverse: Reverse,
 }
 
-pub async fn associate(mut ctrl: TcpStream, shared: SharedRouting, stats: Arc<Stats>) -> io::Result<()> {
+pub async fn associate(mut ctrl: TcpStream, shared: SharedRouting, stats: Arc<Stats>, process: Option<String>) -> io::Result<()> {
     // Answer with the address the client reached us on (loopback or the LAN address).
     let local_ip = match ctrl.local_addr()?.ip() {
         IpAddr::V4(v4) => v4,
@@ -133,6 +134,7 @@ pub async fn associate(mut ctrl: TcpStream, shared: SharedRouting, stats: Arc<St
     rep.extend_from_slice(&port.to_be_bytes());
     ctrl.write_all(&rep).await?;
     let mut sess = Session {
+        process,
         client_sock: sock.clone(),
         client: None,
         shared,
@@ -178,9 +180,9 @@ impl Session {
                 return;
             }
             let routing = current(&self.shared);
-            let (decision, rule) = routing.decide_full(&host, port).await;
+            let (decision, rule) = routing.decide_full(&host, port, self.process.as_deref()).await;
             let (outbound, engine) = outbound_label(&decision);
-            let conn = self.stats.open(&host, port, "udp", rule, outbound, engine);
+            let conn = self.stats.open(&host, port, "udp", self.process.as_deref(), rule, outbound, engine);
             let (target, closed) = match decision {
                 Decision::Block => {
                     self.stats.close(&conn, Some("blocked by rule".into()));
@@ -293,13 +295,20 @@ impl Session {
 // ---------------------------------------------------------------- per-flow relay (native TUN)
 
 /// Relay one UDP flow (a stream where every read/write is one datagram).
-pub async fn relay_flow<S>(flow: S, host: String, port: u16, routing: Arc<Routing>, stats: Arc<Stats>) -> io::Result<()>
+pub async fn relay_flow<S>(
+    flow: S,
+    host: String,
+    port: u16,
+    process: Option<String>,
+    routing: Arc<Routing>,
+    stats: Arc<Stats>,
+) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let (decision, rule) = routing.decide_full(&host, port).await;
+    let (decision, rule) = routing.decide_full(&host, port, process.as_deref()).await;
     let (outbound, engine) = outbound_label(&decision);
-    let conn = stats.open(&host, port, "udp", rule, outbound, engine);
+    let conn = stats.open(&host, port, "udp", process.as_deref(), rule, outbound, engine);
     let res = flow_inner(flow, &host, port, decision, &routing, &conn, &stats).await;
     stats.close(&conn, res.as_ref().err().map(|e| e.to_string()));
     res

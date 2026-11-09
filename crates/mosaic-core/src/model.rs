@@ -280,6 +280,8 @@ pub enum RuleKind {
     Geoip,
     /// Category from geosite.dat ("category-ads-all", "google" …).
     Geosite,
+    /// Executable name of the application ("telegram.exe").
+    ProcessName,
 }
 
 impl RuleKind {
@@ -292,6 +294,7 @@ impl RuleKind {
             RuleKind::Port => "port",
             RuleKind::Geoip => "geoip",
             RuleKind::Geosite => "geosite",
+            RuleKind::ProcessName => "process_name",
         }
     }
 
@@ -404,6 +407,10 @@ pub struct Settings {
     pub startup_mode: StartupMode,
     /// Listen on all interfaces so other devices in the LAN can use the proxy.
     pub allow_lan: bool,
+    /// Smart Connect: keep the fastest working node selected automatically.
+    pub smart_connect: bool,
+    /// Refresh subscriptions every N hours (0 = only manually).
+    pub sub_update_hours: u32,
 }
 
 impl Default for Settings {
@@ -427,6 +434,8 @@ impl Default for Settings {
             auto_connect: false,
             startup_mode: StartupMode::Last,
             allow_lan: false,
+            smart_connect: false,
+            sub_update_hours: 12,
         }
     }
 }

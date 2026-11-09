@@ -267,6 +267,7 @@ select { cursor: pointer; }
 
 /* ---------- 0.5: platforms and small screens */
 [data-platform="android"] .desktop-only { display: none !important; }
+[data-platform]:not([data-platform="windows"]) .windows-only { display: none !important; }
 .android-only { display: none !important; }
 [data-platform="android"] .android-only { display: revert !important; }
 .lat small { display: block; font-size: 10.5px; color: var(--muted); font-weight: 400; }

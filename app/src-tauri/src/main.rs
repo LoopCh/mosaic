@@ -114,6 +114,21 @@ async fn install_app_update(app: AppHandle, ctl: Ctl<'_>) -> Result<(), String> 
     Ok(())
 }
 
+/// Open a release page in the browser (Linux: no installer, the banner links to the release).
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://github.com/") {
+        return Err("only GitHub release pages can be opened".into());
+    }
+    #[cfg(windows)]
+    let r = std::process::Command::new("explorer").arg(&url).spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(&url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open").arg(&url).spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn set_smart(ctl: Ctl<'_>, on: bool) -> Result<(), String> {
     ctl.set_smart(on).await;
@@ -301,6 +316,7 @@ fn main() {
             reset_engines,
             check_app_update,
             install_app_update,
+            open_url,
             test_latency,
             connections,
             logs,

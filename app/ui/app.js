@@ -28,8 +28,9 @@ function pickLang(setting) {
   return window.I18N[want] ? want : 'en';
 }
 function t(key, ...args) {
-  // Platform-specific wording: "key@android" wins over "key" on Android.
-  if (isAndroid() && (window.I18N.en[key + '@android'] !== undefined)) key += '@android';
+  // Platform-specific wording: "key@android" / "key@linux" win over "key" there.
+  const plat = snap && snap.platform;
+  if (plat && plat !== 'windows' && window.I18N.en[key + '@' + plat] !== undefined) key += '@' + plat;
   const s = (window.I18N[lang] && window.I18N[lang][key]) ?? window.I18N.en[key] ?? key;
   return s.replace(/\{(\d)\}/g, (_, i) => String(args[+i] ?? ''));
 }
@@ -210,7 +211,7 @@ function renderHome() {
   if (st.connected) {
     $('#hero-sub').textContent = st.tun && isAndroid() ? t('hero.viaVpn')
       : st.tun
-      ? (st.tun_stack === 'native' ? t('hero.viaTunNative') : t('hero.viaTun')) + ' · ' + (st.dns_protected ? t('hero.dnsOk') : t('hero.dnsOff'))
+      ? (st.tun_stack === 'native' ? t('hero.viaTunNative') : t('hero.viaTun')) + (snap.platform === 'windows' ? ' · ' + (st.dns_protected ? t('hero.dnsOk') : t('hero.dnsOff')) : '')
       : st.system_proxy ? t('hero.viaProxy', st.listen_port)
       : t('hero.viaPort', (st.lan ? (snap.lan_ip || t('hero.lanAddr')) : '127.0.0.1') + ':' + st.listen_port);
   } else {

@@ -34,6 +34,10 @@ pub fn search_dirs() -> Vec<PathBuf> {
         v.push(PathBuf::from(d));
     }
     v.push(updated_dir());
+    // Linux: our executable copy of the bundled engines (see linux::install_bundled).
+    if cfg!(target_os = "linux") {
+        v.push(bundled_copy_dir());
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             v.push(dir.join("engines"));
@@ -56,6 +60,11 @@ pub fn search_dirs() -> Vec<PathBuf> {
 /// Where engine updates are installed (%APPDATA%\Mosaic\engines on Windows).
 pub fn updated_dir() -> PathBuf {
     crate::store::data_dir().join("engines")
+}
+
+/// Linux: where the bundled engines are copied to (writable, executable, can carry the TUN capability).
+pub fn bundled_copy_dir() -> PathBuf {
+    crate::store::data_dir().join("bin")
 }
 
 /// Engines can be updated from the app (not on Android: apps may not execute downloaded files).

@@ -7,7 +7,11 @@ pub fn set_system_proxy(port: u16) -> Result<bool, String> {
     {
         win::set(port).map(|_| true)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux::set_system_proxy(port)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = port;
         Ok(false)
@@ -19,7 +23,11 @@ pub fn unset_system_proxy() -> Result<(), String> {
     {
         win::unset()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux::unset_system_proxy()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Ok(())
     }
@@ -33,11 +41,16 @@ pub fn set_autostart(enable: bool, exe: &std::path::Path, elevated: bool) -> Res
     {
         win::set_autostart(enable, exe, elevated)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = elevated;
+        crate::linux::set_autostart(enable, exe)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (exe, elevated);
         if enable {
-            Err("autostart is implemented for Windows only so far".into())
+            Err("autostart is not available on this OS yet".into())
         } else {
             Ok(())
         }
@@ -61,13 +74,13 @@ pub fn is_admin() -> bool {
     {
         win::is_admin()
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        std::process::Command::new("id")
-            .arg("-u")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-            .unwrap_or(false)
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        false
     }
 }
 

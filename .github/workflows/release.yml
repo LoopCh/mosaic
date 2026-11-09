@@ -80,3 +80,21 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: out/*
+
+  linux:
+    uses: ./.github/workflows/linux.yml
+    secrets: inherit
+
+  linux-publish:
+    needs: [release, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Mosaic-linux-x64
+          path: out
+      - name: Checksum
+        run: cd out && sha256sum * > SHA256SUMS-linux && cat SHA256SUMS-linux
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*

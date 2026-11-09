@@ -149,28 +149,38 @@ fn engine_repo(kind: EngineKind) -> &'static str {
     }
 }
 
-/// Windows x64 archive of the engine in a release.
+/// Release asset names for this OS / CPU: (Xray archive, sing-box archive suffix).
+fn platform_assets() -> (&'static str, &'static str) {
+    match (cfg!(windows), cfg!(target_arch = "aarch64")) {
+        (true, false) => ("Xray-windows-64.zip", "-windows-amd64.zip"),
+        (true, true) => ("Xray-windows-arm64-v8a.zip", "-windows-arm64.zip"),
+        (false, false) => ("Xray-linux-64.zip", "-linux-amd64.tar.gz"),
+        (false, true) => ("Xray-linux-arm64-v8a.zip", "-linux-arm64.tar.gz"),
+    }
+}
+
+/// The engine archive for this OS in a release.
 fn engine_asset(kind: EngineKind, rel: &Release) -> Option<Asset> {
+    let (xray, sb_suffix) = platform_assets();
     rel.assets
         .iter()
         .find(|a| match kind {
-            EngineKind::Xray => a.name == "Xray-windows-64.zip",
-            EngineKind::Singbox => {
-                a.name
-                    .strip_prefix("sing-box-")
-                    .and_then(|r| r.strip_suffix("-windows-amd64.zip"))
-                    .is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
-            }
+            EngineKind::Xray => a.name == xray,
+            EngineKind::Singbox => a
+                .name
+                .strip_prefix("sing-box-")
+                .and_then(|r| r.strip_suffix(sb_suffix))
+                .is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.')),
         })
         .cloned()
 }
 
-/// Files taken from the engine archive.
-fn wanted_files(kind: EngineKind) -> &'static [&'static str] {
+/// Files taken from the engine archive (the executable first).
+fn wanted_files(kind: EngineKind) -> Vec<&'static str> {
     match kind {
-        EngineKind::Xray => &["xray.exe", "geoip.dat", "geosite.dat"],
-        // Newer sing-box builds ship libcronet.dll next to the exe (naive outbound).
-        EngineKind::Singbox => &["sing-box.exe", "libcronet.dll"],
+        EngineKind::Xray => vec![kind.exe_name(), "geoip.dat", "geosite.dat"],
+        // Newer sing-box builds ship libcronet next to the binary (naive outbound).
+        EngineKind::Singbox => vec![kind.exe_name(), "libcronet.dll", "libcronet.so"],
     }
 }
 
@@ -195,7 +205,10 @@ pub async fn stage_engine(kind: EngineKind, staging: &Path) -> Result<(String, V
         None => return Err(format!("{}: the release has no checksum — not installing an unverified file", asset.name)),
     }
     let staging = staging.to_path_buf();
-    let files = tokio::task::spawn_blocking(move || unpack(kind, &data, &staging)).await.map_err(|e| e.to_string())??;
+    let tgz = asset.name.ends_with(".tar.gz");
+    let files = tokio::task::spawn_blocking(move || if tgz { unpack_tgz(kind, &data, &staging) } else { unpack(kind, &data, &staging) })
+        .await
+        .map_err(|e| e.to_string())??;
     Ok((rel.tag, files))
 }
 
@@ -216,10 +229,43 @@ fn unpack(kind: EngineKind, zip_bytes: &[u8], staging: &Path) -> Result<Vec<Stri
             got.push(base);
         }
     }
-    let exe = wanted_files(kind)[0];
+    finish_unpack(kind, staging, got)
+}
+
+/// sing-box for Linux comes as .tar.gz.
+fn unpack_tgz(kind: EngineKind, bytes: &[u8], staging: &Path) -> Result<Vec<String>, String> {
+    let _ = std::fs::remove_dir_all(staging);
+    std::fs::create_dir_all(staging).map_err(|e| e.to_string())?;
+    let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(Cursor::new(bytes)));
+    let mut got = Vec::new();
+    for entry in ar.entries().map_err(|e| format!("bad archive: {e}"))? {
+        let mut e = entry.map_err(|e| format!("bad archive: {e}"))?;
+        if !e.header().entry_type().is_file() {
+            continue;
+        }
+        let path = e.path().map_err(|e| e.to_string())?.into_owned();
+        let base = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if wanted_files(kind).contains(&base.as_str()) && !got.contains(&base) {
+            let mut out = std::fs::File::create(staging.join(&base)).map_err(|e| e.to_string())?;
+            std::io::copy(&mut e, &mut out).map_err(|e| e.to_string())?;
+            got.push(base);
+        }
+    }
+    finish_unpack(kind, staging, got)
+}
+
+fn finish_unpack(kind: EngineKind, staging: &Path, got: Vec<String>) -> Result<Vec<String>, String> {
+    let exe = kind.exe_name();
     if !got.iter().any(|g| g == exe) {
         return Err(format!("{exe} not found in the archive"));
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(staging.join(exe), std::fs::Permissions::from_mode(0o755));
+    }
+    #[cfg(not(unix))]
+    let _ = staging;
     Ok(got)
 }
 
@@ -309,6 +355,7 @@ mod tests {
         assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
+    #[cfg(all(windows, target_arch = "x86_64"))]
     #[test]
     fn assets() {
         let v: Value = serde_json::from_str(
@@ -317,6 +364,21 @@ mod tests {
                 {"name":"sing-box-1.12.4-windows-amd64.zip","browser_download_url":"b","digest":"sha256:ABC"},
                 {"name":"sing-box-windows-amd64.zip","browser_download_url":"x"},
                 {"name":"Xray-windows-64.zip","browser_download_url":"c"}]}"#,
+        )
+        .unwrap();
+        let rel = parse_release(&v).unwrap();
+        assert_eq!(engine_asset(EngineKind::Singbox, &rel).unwrap().url, "b");
+        assert_eq!(engine_asset(EngineKind::Xray, &rel).unwrap().url, "c");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn assets_linux() {
+        let v: Value = serde_json::from_str(
+            r#"{"tag_name":"v1.12.4","html_url":"u","body":"","assets":[
+                {"name":"sing-box-1.12.4-linux-amd64-glibc.tar.gz","browser_download_url":"a"},
+                {"name":"sing-box-1.12.4-linux-amd64.tar.gz","browser_download_url":"b"},
+                {"name":"Xray-linux-64.zip","browser_download_url":"c"}]}"#,
         )
         .unwrap();
         let rel = parse_release(&v).unwrap();

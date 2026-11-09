@@ -19,6 +19,8 @@ pub mod dns;
 pub mod engines;
 pub mod geo;
 pub mod hub;
+#[cfg(target_os = "linux")]
+pub mod linux;
 pub mod links;
 pub mod model;
 pub mod net;

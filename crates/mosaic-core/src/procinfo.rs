@@ -79,7 +79,12 @@ fn owner_pid(local: SocketAddr, proto: Proto) -> Option<u32> {
     win::owner_pid(local, proto)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn owner_pid(local: SocketAddr, proto: Proto) -> Option<u32> {
+    lin::owner_pid(local, proto)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn owner_pid(_local: SocketAddr, _proto: Proto) -> Option<u32> {
     None
 }
@@ -89,9 +94,65 @@ fn image_name(pid: u32) -> Option<String> {
     win::image_name(pid)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn image_name(pid: u32) -> Option<String> {
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    Some(file_name_lower(&exe.to_string_lossy()))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn image_name(_pid: u32) -> Option<String> {
     None
+}
+
+/// Linux: /proc/net/{tcp,udp}[6] give the socket inode of a local port,
+/// /proc/<pid>/fd links ("socket:[inode]") give its process.
+#[cfg(target_os = "linux")]
+mod lin {
+    use super::Proto;
+    use std::net::SocketAddr;
+
+    /// Socket inode for a local port in one /proc/net table (text).
+    pub(super) fn inode_in(table: &str, port: u16) -> Option<u64> {
+        for line in table.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 10 {
+                continue;
+            }
+            let local_port = f[1].rsplit(':').next().and_then(|p| u16::from_str_radix(p, 16).ok());
+            if local_port != Some(port) || f[3] == "0A" {
+                continue; // other port, or a listening socket
+            }
+            if let Ok(inode) = f[9].parse::<u64>() {
+                if inode != 0 {
+                    return Some(inode);
+                }
+            }
+        }
+        None
+    }
+
+    pub(super) fn owner_pid(local: SocketAddr, proto: Proto) -> Option<u32> {
+        let names: &[&str] = match proto {
+            Proto::Tcp => &["/proc/net/tcp", "/proc/net/tcp6"],
+            Proto::Udp => &["/proc/net/udp", "/proc/net/udp6"],
+        };
+        let inode = names
+            .iter()
+            .filter_map(|n| std::fs::read_to_string(n).ok())
+            .find_map(|t| inode_in(&t, local.port()))?;
+        let want = format!("socket:[{inode}]");
+        for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+            let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+            let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) else { continue };
+            for fd in fds.flatten() {
+                if std::fs::read_link(fd.path()).map(|l| l.as_os_str() == want.as_str()).unwrap_or(false) {
+                    return Some(pid);
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(windows)]
@@ -218,6 +279,14 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_net_parse() {
+        let t = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:1ED2 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 11111 1 0000000000000000 100 0 0 10 0\n   1: 0100007F:D431 0100007F:1ED2 01 00000000:00000000 00:00000000 00000000  1000        0 22222 1 0000000000000000 20 4 30 10 -1\n";
+        assert_eq!(lin::inode_in(t, 0xD431), Some(22222));
+        assert_eq!(lin::inode_in(t, 0x1ED2), None); // listening
+    }
 
     #[test]
     fn helpers() {

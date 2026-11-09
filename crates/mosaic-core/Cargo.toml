@@ -1,6 +1,6 @@
 [package]
 name = "mosaic-core"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Mosaic hub: unified config model, routing and engine orchestration"
@@ -12,6 +12,8 @@ serde_json = "1"
 ureq = "2.10"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
 
 # Mosaic's own TUN stack: wintun on Windows, a VpnService file descriptor on Android.
 ipstack = { version = "1.0", optional = true }

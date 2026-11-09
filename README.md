@@ -1,4 +1,4 @@
-# Mosaic 0.6.1
+# Mosaic 0.7
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -6,6 +6,27 @@ that only carry traffic to servers. Rules can send different traffic to nodes on
 different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
+
+## New in 0.7 — Linux
+
+- **Packages:** `.deb` (Debian, Ubuntu, Mint…), `.rpm` (Fedora, openSUSE…) and a portable `.AppImage`,
+  x86_64, built by `.github/workflows/linux.yml`; engines bundled. Plus a CLI archive.
+- **System proxy** on GNOME-based desktops (gsettings) and KDE Plasma (kioslaverc). Elsewhere use
+  the Proxy mode and set 127.0.0.1:7890 in apps.
+- **TUN** through the sing-box adapter, without running Mosaic as root: the first time, Mosaic asks
+  for your password once (polkit) and gives its own copy of sing-box the `cap_net_admin` capability.
+  Needs `setcap` (libcap2-bin / libcap) and `pkexec` (polkit) — present on regular desktops.
+- Engines are copied from the package to `~/.config/mosaic/bin` (executable, can carry the capability);
+  engine updates work on Linux too (tar.gz).
+- **Rules by application** in system-proxy and proxy modes (owner from /proc), by program name
+  (`telegram-desktop`, `firefox`); in TUN the rules are passed to sing-box as on Windows.
+- Autostart (`~/.config/autostart/mosaic.desktop`), tray, single instance (a socket in `$XDG_RUNTIME_DIR`).
+- The update banner opens the release page (no installer to run on Linux).
+
+**Testing on a Windows PC:** Windows 11 runs Linux GUI apps in WSL2 (WSLg): `wsl --install -d Ubuntu`, then in
+Ubuntu `sudo apt install ./Mosaic_0.7.0_amd64.deb` (copy the file from `/mnt/c/Users/<you>/Downloads`) and
+run `mosaic`. System proxy has no effect there (no GNOME session) — use Proxy mode or TUN (TUN in WSL changes
+only the WSL network). A VirtualBox VM with Ubuntu desktop gives the full picture.
 
 ## New in 0.6.1
 
@@ -89,8 +110,8 @@ Keep `mosaic.jks` safe: an app signed with a lost key can never be updated.
 ### Releasing
 
 ```
-git tag v0.6.1
-git push origin v0.6.1
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub

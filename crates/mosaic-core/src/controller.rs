@@ -318,6 +318,10 @@ impl Controller {
             let _ = store::save_state(&dir, &state);
         }
         logs.push(format!("[hub] data: {}", dir.display()));
+        #[cfg(target_os = "linux")]
+        for l in crate::linux::install_bundled(&engines::bundled_copy_dir()) {
+            logs.push(l);
+        }
         let close_to_tray = AtomicBool::new(state.settings.close_to_tray);
         Self {
             inner: Mutex::new(Inner { state, session: None, latency: HashMap::new() }),
@@ -328,8 +332,9 @@ impl Controller {
             app_update: std::sync::Mutex::new(None),
             tun_fd: std::sync::Mutex::new(None),
             dir,
-            // Android: the VPN permission dialog replaces administrator rights.
-            admin: sys::is_admin() || cfg!(target_os = "android"),
+            // "TUN is possible": Android asks for the VPN permission, Linux grants a capability
+            // to sing-box (one password prompt) — neither needs Mosaic itself to run as root.
+            admin: sys::is_admin() || cfg!(any(target_os = "android", target_os = "linux")),
         }
     }
 
@@ -496,7 +501,8 @@ impl Controller {
             engines: engine_infos,
             is_admin: self.admin,
             data_dir: self.dir.display().to_string(),
-            native_tun_available: cfg!(feature = "native-tun"),
+            // The native stack needs wintun (Windows) or a VpnService descriptor (Android).
+            native_tun_available: cfg!(feature = "native-tun") && cfg!(any(windows, target_os = "android")),
             app_update: self.app_update.lock().unwrap().clone(),
             lan_ip: if st.settings.allow_lan { lan_ip() } else { None },
             geoip_file,
@@ -1012,7 +1018,7 @@ impl Controller {
 
     async fn spawn_engine(&self, kind: EngineKind, slots: &[Slot]) -> Result<EngineProcess, String> {
         let exe = engines::find(kind).ok_or_else(|| {
-            format!("{} not found: put {} into the engines folder (scripts\\get-engines.ps1)", kind.label(), kind.exe_name())
+            format!("{} not found: put {} into the engines folder ({})", kind.label(), kind.exe_name(), if cfg!(windows) { "scripts\\get-engines.ps1" } else { "scripts/get-engines-linux.sh" })
         })?;
         let cfg = engines::compile(kind, slots)?;
         let path = self.write_config(kind.slug(), &cfg)?;
@@ -1122,6 +1128,19 @@ impl Controller {
             }
         }
         let tun = settings.mode == Mode::Tun;
+        #[cfg(target_os = "linux")]
+        if tun {
+            // Linux: the sing-box TUN adapter, allowed to create the interface by a file capability.
+            settings.tun_stack = TunStack::Singbox;
+            if !sys::is_admin() {
+                let exe = engines::find(EngineKind::Singbox).ok_or("TUN mode needs sing-box in the engines folder")?;
+                self.logs.push("[hub] asking for permission to create the TUN interface (one-time)…");
+                tokio::task::spawn_blocking(move || crate::linux::grant_tun(&exe))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| format!("TUN: {e}"))?;
+            }
+        }
         if tun && !self.admin {
             return Err("TUN mode requires running Mosaic as administrator".into());
         }

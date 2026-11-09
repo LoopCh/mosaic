@@ -254,3 +254,13 @@ select { cursor: pointer; }
 .app-cell { color: var(--muted); max-width: 160px; }
 .table td { max-width: 240px; }
 .table .rule-cell { max-width: 200px; }
+
+/* ---------- 0.4 */
+.banner { display: flex; align-items: center; gap: 14px; justify-content: space-between; margin: 0 0 18px; padding: 10px 14px; border-radius: 12px;
+  background: linear-gradient(90deg, rgba(124, 92, 255, .22), rgba(56, 189, 248, .12)); border: 1px solid rgba(124, 92, 255, .4); }
+.banner.hidden { display: none; }
+.eng-upd { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.set-ctl-row { display: flex; gap: 12px; align-items: center; justify-content: flex-end; }
+.set-ctl-row .btn { white-space: nowrap; }
+.spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); border-top-color: var(--accent, #7c5cff); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

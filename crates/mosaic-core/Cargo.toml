@@ -1,6 +1,6 @@
 [package]
 name = "mosaic-core"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Mosaic hub: unified config model, routing and engine orchestration"
@@ -10,6 +10,8 @@ tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "net", "io-
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = "2.10"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Experimental native TUN stack (Windows first). Off by default so the stable
 # build never depends on it: cargo build --features mosaic-core/native-tun

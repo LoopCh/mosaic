@@ -1,0 +1,64 @@
+name: release
+
+# Push a tag like v0.4.0 (matching the version in Cargo.toml / tauri.conf.json)
+# to build the installer and publish a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check that the tag matches the app version
+        shell: pwsh
+        run: |
+          $ver = (Get-Content app/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          if ("v$ver" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match version $ver in tauri.conf.json" }
+
+      - name: Unit tests (core)
+        run: cargo test -p mosaic-core
+
+      - name: Download engines and geo files
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/get-engines.ps1
+
+      - name: Build installer (Tauri + NSIS)
+        working-directory: app/src-tauri
+        run: npx --yes @tauri-apps/cli@2 build
+
+      - name: Build CLI
+        run: cargo build --release -p mosaic-cli
+
+      - name: Collect release files
+        shell: pwsh
+        run: |
+          $ver = (Get-Content app/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force out, portable/Mosaic | Out-Null
+          Copy-Item target/release/bundle/nsis/*-setup.exe out/
+          Copy-Item target/release/mosaic.exe, target/release/mosaic-cli.exe portable/Mosaic/
+          Copy-Item engines portable/Mosaic/engines -Recurse
+          Copy-Item README.md portable/Mosaic/
+          if (Test-Path LICENSE) { Copy-Item LICENSE portable/Mosaic/ }
+          Compress-Archive -Path portable/Mosaic -DestinationPath "out/Mosaic_${ver}_x64-portable.zip"
+          Get-ChildItem out -File | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii out/SHA256SUMS
+          Get-Content out/SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true

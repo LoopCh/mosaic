@@ -22,12 +22,14 @@ pub fn compile(kind: EngineKind, slots: &[Slot]) -> Result<Value, String> {
     }
 }
 
-/// Directories searched for engine binaries, in order.
+/// Directories searched for engine binaries, in order. Engines updated from
+/// the app live in the data folder and take priority over the bundled ones.
 pub fn search_dirs() -> Vec<PathBuf> {
     let mut v = Vec::new();
     if let Ok(d) = std::env::var("MOSAIC_ENGINES") {
         v.push(PathBuf::from(d));
     }
+    v.push(updated_dir());
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             v.push(dir.join("engines"));
@@ -44,8 +46,12 @@ pub fn search_dirs() -> Vec<PathBuf> {
     if let Ok(c) = std::env::current_dir() {
         v.push(c.join("engines"));
     }
-    v.push(crate::store::data_dir().join("engines"));
     v
+}
+
+/// Where engine updates are installed (%APPDATA%\Mosaic\engines on Windows).
+pub fn updated_dir() -> PathBuf {
+    crate::store::data_dir().join("engines")
 }
 
 pub fn find(kind: EngineKind) -> Option<PathBuf> {

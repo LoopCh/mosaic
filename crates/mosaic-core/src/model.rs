@@ -411,6 +411,8 @@ pub struct Settings {
     pub smart_connect: bool,
     /// Refresh subscriptions every N hours (0 = only manually).
     pub sub_update_hours: u32,
+    /// Check GitHub for new Mosaic versions once a day.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -436,6 +438,7 @@ impl Default for Settings {
             allow_lan: false,
             smart_connect: false,
             sub_update_hours: 12,
+            check_updates: true,
         }
     }
 }

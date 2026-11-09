@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Mosaic",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "identifier": "dev.mosaic.client",
   "build": {
     "frontendDist": "../ui"
@@ -26,13 +26,33 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "Mosaic",
+    "copyright": "Copyright © 2026 Mosaic contributors",
+    "category": "Utility",
+    "shortDescription": "Multi-engine proxy and VPN client",
+    "longDescription": "Mosaic routes traffic through Xray and sing-box nodes with one set of rules, DNS and statistics.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico",
       "icons/icon.png"
-    ]
+    ],
+    "resources": {
+      "../../engines/": "engines/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "Russian"
+        ],
+        "displayLanguageSelector": true
+      }
+    }
   }
 }

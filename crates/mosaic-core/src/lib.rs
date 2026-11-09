@@ -31,6 +31,7 @@ pub mod sys;
 #[cfg(feature = "native-tun")]
 pub mod tun_native;
 pub mod udp;
+pub mod updates;
 pub mod util;
 #[cfg(windows)]
 pub mod wfp;

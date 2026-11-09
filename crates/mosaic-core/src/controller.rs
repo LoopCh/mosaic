@@ -24,6 +24,7 @@ use crate::rules;
 use crate::stats::{ConnView, Stats};
 use crate::store;
 use crate::sys;
+use crate::updates::{self, AppUpdate, EngineUpdate};
 use crate::util::{now_ms, LogBuf};
 
 // ---------------------------------------------------------------- views for the UI
@@ -82,6 +83,8 @@ pub struct EngineVersion {
 
 #[derive(Debug, Serialize)]
 pub struct Snapshot {
+    /// Mosaic version (kept in sync across all crates and tauri.conf.json).
+    pub version: &'static str,
     pub nodes: Vec<NodeView>,
     pub subscriptions: Vec<Subscription>,
     pub rules: Vec<Rule>,
@@ -92,6 +95,8 @@ pub struct Snapshot {
     pub is_admin: bool,
     pub data_dir: String,
     pub native_tun_available: bool,
+    /// A newer Mosaic release, if found.
+    pub app_update: Option<AppUpdate>,
     /// This computer's address in the local network (for "allow LAN").
     pub lan_ip: Option<String>,
     pub geoip_file: Option<String>,
@@ -168,6 +173,7 @@ pub struct Controller {
     pub close_to_tray: AtomicBool,
     /// Ask the background loop for an immediate Smart Connect test.
     smart_kick: AtomicBool,
+    app_update: std::sync::Mutex<Option<AppUpdate>>,
     dir: PathBuf,
     admin: bool,
 }
@@ -292,6 +298,7 @@ impl Controller {
             logs,
             close_to_tray,
             smart_kick: AtomicBool::new(true),
+            app_update: std::sync::Mutex::new(None),
             dir,
             admin: sys::is_admin(),
         }
@@ -418,6 +425,7 @@ impl Controller {
             .collect();
         let (geoip_file, geosite_file) = geo::file_status();
         Snapshot {
+            version: env!("CARGO_PKG_VERSION"),
             nodes,
             subscriptions: st.subscriptions.clone(),
             rules: st.rules.clone(),
@@ -428,6 +436,7 @@ impl Controller {
             is_admin: self.admin,
             data_dir: self.dir.display().to_string(),
             native_tun_available: cfg!(feature = "native-tun"),
+            app_update: self.app_update.lock().unwrap().clone(),
             lan_ip: if st.settings.allow_lan { lan_ip() } else { None },
             geoip_file,
             geosite_file,
@@ -628,6 +637,131 @@ impl Controller {
         self.logs.push(if on { "[smart] Smart Connect on" } else { "[smart] Smart Connect off" });
     }
 
+    // ------------------------------------------------------------ updates
+
+    pub async fn check_app_update(&self) -> Option<AppUpdate> {
+        match updates::check_app().await {
+            Ok(u) => {
+                if let Some(u) = &u {
+                    self.logs.push(format!("[update] Mosaic {} is available", u.version));
+                }
+                *self.app_update.lock().unwrap() = u.clone();
+                u
+            }
+            Err(e) => {
+                self.logs.push(format!("[update] cannot check for updates: {e}"));
+                None
+            }
+        }
+    }
+
+    /// Download the new installer (checksum verified); the UI then runs it.
+    pub async fn download_app_update(&self) -> Result<PathBuf, String> {
+        let dir = std::env::temp_dir().join("mosaic-update");
+        let p = updates::download_app_installer(&dir).await?;
+        self.logs.push(format!("[update] installer downloaded: {}", p.display()));
+        Ok(p)
+    }
+
+    pub async fn check_engine_updates(&self) -> Vec<EngineUpdate> {
+        let mut out = Vec::new();
+        for kind in EngineKind::ALL {
+            let current = match engines::find(kind) {
+                Some(exe) => process::version(&exe).await,
+                None => None,
+            };
+            let (latest, error) = match updates::engine_latest(kind).await {
+                Ok(r) => (Some(r.tag), None),
+                Err(e) => (None, Some(e)),
+            };
+            let available = match (&latest, &current) {
+                (Some(l), Some(c)) => updates::is_newer(l, c),
+                (Some(_), None) => true,
+                _ => false,
+            };
+            out.push(EngineUpdate { kind, current, latest, available, error });
+        }
+        out
+    }
+
+    /// Start the nodes served by `kind` once to prove the engine works with our configs.
+    async fn validate_engine(&self, kind: EngineKind) -> Result<(), String> {
+        let nodes: Vec<Node> = {
+            let g = self.inner.lock().await;
+            g.state.nodes.iter().filter(|n| n.effective_engine().ok() == Some(kind)).cloned().collect()
+        };
+        if nodes.is_empty() {
+            return Ok(());
+        }
+        let (procs, ups) = self.start_engines(&nodes).await?;
+        for p in procs {
+            p.stop().await;
+        }
+        if ups.is_empty() {
+            Err(format!("{} did not start with your nodes", kind.label()))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Install the latest engine release. Verified download → staged → swapped
+    /// in → checked with your nodes (and reconnected if you were connected).
+    /// Any failure restores the previous version.
+    pub async fn update_engine(&self, kind: EngineKind) -> Result<String, String> {
+        let staging = self.dir.join("engines.staging").join(kind.slug());
+        let backup = self.dir.join("engines.bak").join(kind.slug());
+        let target = engines::updated_dir();
+        self.logs.push(format!("[update] downloading the latest {}…", kind.label()));
+        let (tag, files) = updates::stage_engine(kind, &staging).await?;
+        if process::version(&staging.join(kind.exe_name())).await.is_none() {
+            return Err(format!("{} {tag} does not start on this system", kind.label()));
+        }
+        let was_connected = self.is_connected().await;
+        if was_connected {
+            self.disconnect().await;
+        }
+        if let Err(e) = updates::swap_in(&files, &staging, &target, &backup) {
+            updates::roll_back(&files, &target, &backup);
+            if was_connected {
+                let _ = self.connect().await;
+            }
+            return Err(format!("could not replace files: {e}"));
+        }
+        let check = if was_connected { self.connect().await } else { self.validate_engine(kind).await };
+        if let Err(e) = check {
+            self.logs.push(format!("[update] {} {tag} failed ({e}) — restoring the previous version", kind.label()));
+            if was_connected {
+                self.disconnect().await;
+            }
+            updates::roll_back(&files, &target, &backup);
+            if was_connected {
+                let _ = self.connect().await;
+            }
+            return Err(format!("{} {tag} did not work with your nodes; the previous version was restored. {e}", kind.label()));
+        }
+        let _ = std::fs::remove_dir_all(&staging);
+        self.logs.push(format!("[update] {} updated to {tag}", kind.label()));
+        Ok(tag)
+    }
+
+    /// Forget all updated engines and use the ones shipped with Mosaic.
+    pub async fn reset_engines(&self) -> Result<(), String> {
+        let was_connected = self.is_connected().await;
+        if was_connected {
+            self.disconnect().await;
+        }
+        let res = match std::fs::remove_dir_all(engines::updated_dir()) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        };
+        self.logs.push("[update] using the engines shipped with Mosaic");
+        if was_connected {
+            self.connect().await?;
+        }
+        res
+    }
+
     // ------------------------------------------------------------ background work
 
     /// Smart Connect and scheduled subscription refresh. Run once per process,
@@ -657,6 +791,11 @@ impl Controller {
                         }
                     }
                 }
+            }
+
+            // Mosaic updates: 30 s after start, then daily.
+            if settings.check_updates && (tick == 3 || tick % 8640 == 0) {
+                self.check_app_update().await;
             }
 
             if settings.smart_connect {

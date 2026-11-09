@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mosaic_core::controller::{EngineVersion, ImportSummary, Snapshot};
-use mosaic_core::model::{EngineChoice, Rule, Settings};
+use mosaic_core::model::{EngineChoice, EngineKind, Rule, Settings};
+use mosaic_core::updates::{AppUpdate, EngineUpdate};
 use mosaic_core::stats::ConnView;
 use mosaic_core::Controller;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -81,6 +82,36 @@ async fn set_rules(ctl: Ctl<'_>, rules: Vec<Rule>, final_target: String) -> Resu
 #[tauri::command]
 async fn set_settings(ctl: Ctl<'_>, settings: Settings) -> Result<(), String> {
     ctl.set_settings(settings).await
+}
+
+#[tauri::command]
+async fn check_engine_updates(ctl: Ctl<'_>) -> Result<Vec<EngineUpdate>, String> {
+    Ok(ctl.check_engine_updates().await)
+}
+
+#[tauri::command]
+async fn update_engine(ctl: Ctl<'_>, kind: EngineKind) -> Result<String, String> {
+    ctl.update_engine(kind).await
+}
+
+#[tauri::command]
+async fn reset_engines(ctl: Ctl<'_>) -> Result<(), String> {
+    ctl.reset_engines().await
+}
+
+#[tauri::command]
+async fn check_app_update(ctl: Ctl<'_>) -> Result<Option<AppUpdate>, String> {
+    Ok(ctl.check_app_update().await)
+}
+
+/// Download the new installer, start it and quit so it can replace the files.
+#[tauri::command]
+async fn install_app_update(app: AppHandle, ctl: Ctl<'_>) -> Result<(), String> {
+    let installer = ctl.download_app_update().await?;
+    ctl.disconnect().await;
+    std::process::Command::new(&installer).spawn().map_err(|e| format!("cannot start the installer: {e}"))?;
+    app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -265,6 +296,11 @@ fn main() {
             set_rules,
             set_settings,
             set_smart,
+            check_engine_updates,
+            update_engine,
+            reset_engines,
+            check_app_update,
+            install_app_update,
             test_latency,
             connections,
             logs,

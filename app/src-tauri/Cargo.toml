@@ -1,6 +1,6 @@
 [package]
 name = "mosaic"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Mosaic — multi-core VPN client"
@@ -17,7 +17,7 @@ serde_json = "1"
 
 [features]
 # Always embed the UI from ../ui (no dev server needed): `cargo run -p mosaic` just works.
-default = ["custom-protocol"]
+default = ["custom-protocol", "native-tun"]
 custom-protocol = ["tauri/custom-protocol"]
 # Experimental native TUN stack (Windows): cargo build --release -p mosaic --features native-tun
 native-tun = ["mosaic-core/native-tun"]

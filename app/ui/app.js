@@ -77,7 +77,7 @@ function show(v) {
   if (v === 'rules') { rulesDraft = null; renderRules(); }
   if (v === 'settings') renderSettings();
   if (v === 'nodes') { nodesKey = ''; renderNodes(); }
-  if (v === 'engines') renderEngines();
+  if (v === 'engines') { renderEngines(); if (!Object.keys(versions).length) loadEngineVersions().catch(() => {}); }
   if (v === 'home' && snap) renderHome();
   tickView();
 }
@@ -94,6 +94,22 @@ function rerenderAll() {
   if (view === 'settings') renderSettings();
 }
 
+// ------------------------------------------------------------------ app update
+function renderUpdateBanner() {
+  const u = snap && snap.app_update;
+  $('#update-banner').classList.toggle('hidden', !u);
+  if (u) {
+    $('#update-text').textContent = t('upd.available', u.version);
+    $('#update-text').title = u.notes || '';
+    $('#update-install').disabled = !u.installer;
+  }
+}
+$('#update-install').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  if (!confirm(t('upd.confirm', snap.app_update.version))) return;
+  e.currentTarget.textContent = t('upd.downloading');
+  await invoke('install_app_update');
+}));
+
 // ------------------------------------------------------------------ polling
 async function poll() {
   try {
@@ -101,6 +117,7 @@ async function poll() {
     const l = pickLang(snap.settings.ui_language);
     if (l !== lang) { lang = l; rerenderAll(); }
     renderStatus(true);
+    renderUpdateBanner();
     if (view === 'home') renderHome();
     if (view === 'nodes') renderNodes();
     if (view === 'engines') renderEngines();
@@ -138,7 +155,7 @@ function renderStatus(sample) {
   $('#side-dot').className = 'dot' + (connecting ? ' busy' : st.connected ? ' on' : '');
   $('#side-status').textContent = connecting ? t('status.busy') : st.connected ? t('status.on') : t('status.off');
   const sel = selectedNode();
-  $('#side-sub').textContent = st.connected && sel ? sel.name : 'Mosaic 0.2';
+  $('#side-sub').textContent = st.connected && sel ? sel.name : 'Mosaic ' + (snap.version || '');
 }
 
 function renderHome() {
@@ -466,6 +483,8 @@ function renderConns(list) {
 
 // ------------------------------------------------------------------ engines
 const versions = {};
+let engineUpdates = {};
+let updatingKind = null;
 function renderEngines() {
   if (!snap) return;
   $('#engine-grid').innerHTML = snap.engines.map((e) => {
@@ -477,16 +496,60 @@ function renderEngines() {
       <h3>${engineBadge(e.kind)} ${esc(e.name)} ${state}</h3>
       <dl>
         <dt>${t('engines.file')}</dt><dd>${e.path ? esc(e.path) : t('engines.put', exe) + `<br><span class="muted">${t('engines.script')}</span>`}</dd>
-        <dt>${t('engines.version')}</dt><dd>${esc(versions[e.kind] || '—')}</dd>
+        <dt>${t('engines.version')}</dt><dd>${esc(engineVersionText(e.kind))}</dd>
         <dt>${t('engines.nodes')}</dt><dd>${t('engines.supports', supported, snap.nodes.length)}${e.running ? t('engines.serves', e.nodes) : ''}</dd>
         <dt>PID</dt><dd>${e.pids.length ? e.pids.join(', ') : '—'}</dd>
       </dl>
+      ${engineUpdateRow(e.kind)}
     </div>`;
   }).join('');
+  $$('#engine-grid [data-update]').forEach((b) => b.addEventListener('click', async () => {
+    if (updatingKind) return;
+    const kind = b.dataset.update;
+    updatingKind = kind;
+    renderEngines();
+    try {
+      const tag = await invoke('update_engine', { kind });
+      toast(t('engines.updated', engineName(kind), tag), 'ok', 5000);
+      engineUpdates = {};
+    } catch (err) {
+      toast(String(err), 'err', 8000);
+    } finally {
+      updatingKind = null;
+      await loadEngineVersions().catch(() => {});
+    }
+  }));
 }
-$('#btn-versions').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+
+function engineVersionText(kind) {
+  const u = engineUpdates[kind];
+  return (u && u.current) || versions[kind] || '—';
+}
+
+function engineUpdateRow(kind) {
+  if (updatingKind === kind) return `<div class="eng-upd"><span>${t('engines.updating')}</span><span class="spinner"></span></div>`;
+  const u = engineUpdates[kind];
+  if (!u) return '';
+  if (u.error) return `<div class="eng-upd muted small">${esc(u.error)}</div>`;
+  if (u.available) return `<div class="eng-upd"><span>${t('engines.newVersion', esc(u.latest))}</span><button class="btn primary" data-update="${kind}" ${updatingKind ? 'disabled' : ''}>${t('engines.update')}</button></div>`;
+  return `<div class="eng-upd muted small">✓ ${t('engines.upToDate')}</div>`;
+}
+
+async function loadEngineVersions() {
   for (const v of await invoke('engine_versions')) versions[v.kind] = v.version || t('engines.unknown');
   renderEngines();
+}
+$('#btn-engines-check').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  engineUpdates = {};
+  for (const u of await invoke('check_engine_updates')) engineUpdates[u.kind] = u;
+  renderEngines();
+}));
+$('#btn-engines-reset').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  if (!confirm(t('engines.resetConfirm'))) return;
+  await invoke('reset_engines');
+  engineUpdates = {};
+  await loadEngineVersions();
+  toast(t('engines.resetDone'), 'ok', 3000);
 }));
 
 // ------------------------------------------------------------------ logs
@@ -519,6 +582,8 @@ function renderSettings() {
   $('#set-startup').value = s.startup_mode || 'last';
   $('#set-lan').checked = !!s.allow_lan;
   $('#set-subs').value = String(s.sub_update_hours ?? 12);
+  $('#set-updates').checked = s.check_updates !== false;
+  $('#set-version').textContent = t('set.updates.t', snap.version || '');
   $('#set-testurl').value = s.test_url;
   $('#set-ua').value = s.user_agent;
   $('#set-dns').value = s.direct_dns || '';
@@ -544,6 +609,7 @@ $('#settings-save').addEventListener('click', (e) => withBusy(e.currentTarget, a
     startup_mode: $('#set-startup').value,
     allow_lan: $('#set-lan').checked,
     sub_update_hours: parseInt($('#set-subs').value, 10) || 0,
+    check_updates: $('#set-updates').checked,
     test_url: $('#set-testurl').value.trim(),
     user_agent: $('#set-ua').value.trim(),
     direct_dns: $('#set-dns').value.trim() || '8.8.8.8',
@@ -559,6 +625,13 @@ $('#settings-save').addEventListener('click', (e) => withBusy(e.currentTarget, a
   if (l !== lang) { lang = l; rerenderAll(); }
   renderSettings();
   toast(t('settings.saved'), 'ok', 2000);
+}));
+
+$('#btn-app-check').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const u = await invoke('check_app_update');
+  snap = await invoke('snapshot');
+  renderUpdateBanner();
+  toast(u ? t('upd.available', u.version) : t('upd.none'), u ? 'ok' : 'info', 4000);
 }));
 
 // ------------------------------------------------------------------ go

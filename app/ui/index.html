@@ -31,12 +31,16 @@
       <span class="dot" id="side-dot"></span>
       <div>
         <div id="side-status"></div>
-        <div class="muted small" id="side-sub">0.2</div>
+        <div class="muted small" id="side-sub"></div>
       </div>
     </div>
   </aside>
 
   <main>
+    <div class="banner hidden" id="update-banner">
+      <span id="update-text"></span>
+      <button class="btn primary" id="update-install" data-i18n="upd.install"></button>
+    </div>
     <!-- HOME -->
     <section class="view active" id="view-home">
       <div class="home">
@@ -160,7 +164,10 @@
     <!-- ENGINES -->
     <section class="view" id="view-engines">
       <header class="view-head"><h1 data-i18n="nav.engines"></h1>
-        <div class="actions"><button class="btn" id="btn-versions" data-i18n="engines.versions"></button></div>
+        <div class="actions">
+          <button class="btn ghost" id="btn-engines-reset" data-i18n="engines.reset"></button>
+          <button class="btn" id="btn-engines-check" data-i18n="engines.check"></button>
+        </div>
       </header>
       <p class="muted lead" data-i18n="engines.lead"></p>
       <div class="engine-grid" id="engine-grid"></div>
@@ -185,6 +192,7 @@
       <div class="settings">
       <div class="card set-card">
         <h2 data-i18n="sec.general"></h2>
+        <div class="set-row"><div class="set-text"><div class="set-title" id="set-version"></div><div class="set-desc" data-i18n="set.updates.d"></div></div><div class="set-ctl set-ctl-row"><label class="switch"><input type="checkbox" id="set-updates" /><span></span></label><button class="btn" id="btn-app-check" data-i18n="upd.checkNow"></button></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.lang.t"></div><div class="set-desc" data-i18n="set.lang.d"></div></div><div class="set-ctl"><select id="set-lang"><option value="auto" data-i18n="set.lang.auto"></option><option value="en">English</option><option value="ru">Русский</option></select></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.tray.t"></div><div class="set-desc" data-i18n="set.tray.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-tray" /><span></span></label></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.autostart.t"></div><div class="set-desc" data-i18n="set.autostart.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-autostart" /><span></span></label></div></div>

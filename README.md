@@ -1,4 +1,4 @@
-# Mosaic 0.3
+# Mosaic 0.4
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -6,6 +6,34 @@ that only carry traffic to servers. Rules can send different traffic to nodes on
 different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
+
+## New in 0.4
+
+- **Installer (Windows):** `Mosaic_<version>_x64-setup.exe` (NSIS, per-user install, no admin needed to
+  install, English/Russian). Engines are bundled. A portable zip is published next to it.
+- **Engine updates** (Engines → “Check for updates”): downloads the latest Xray / sing-box release from
+  GitHub, **verifies its SHA-256**, unpacks it into a staging folder, runs `version`, then swaps it in and
+  reconnects. If anything fails, the previous engine is restored automatically. Updated engines live in
+  `%APPDATA%\Mosaic\engines` and take priority over the bundled ones; “Restore bundled versions” removes them.
+- **Mosaic updates:** checked once a day (Settings → General, can be turned off). A banner offers
+  “Install”: the installer is downloaded, its checksum verified, and it runs after Mosaic closes.
+  Nothing is installed without your click.
+- Native TUN is part of the regular build now.
+
+### Releasing
+
+```
+git tag v0.4.0
+git push origin v0.4.0
+```
+
+The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub
+release. The in-app updater looks at the latest (non-pre-)release of `LoopCh/mosaic` and refuses files
+without a checksum. Versions to bump together: `Cargo.toml` of mosaic-core, mosaic-cli, the app and
+`tauri.conf.json`.
+
+Build the installer locally: `scripts/get-engines.ps1`, then in `app/src-tauri`
+`npx @tauri-apps/cli@2 build`.
 
 ## What's new in 0.2
 

@@ -267,6 +267,9 @@ select { cursor: pointer; }
 
 /* ---------- 0.5: platforms and small screens */
 [data-platform="android"] .desktop-only { display: none !important; }
+.android-only { display: none !important; }
+[data-platform="android"] .android-only { display: revert !important; }
+.lat small { display: block; font-size: 10.5px; color: var(--muted); font-weight: 400; }
 
 @media (max-width: 760px) {
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; height: 100vh; height: 100dvh; }
@@ -359,3 +362,15 @@ select { cursor: pointer; }
 .modal { width: min(420px, 100%); padding: 20px; box-shadow: 0 20px 60px rgba(0, 0, 0, .5); }
 .modal-text { line-height: 1.5; white-space: pre-wrap; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+/* ---------- app picker (Android) */
+.picker { width: min(520px, 100%); height: min(720px, 100%); display: flex; flex-direction: column; gap: 10px; }
+.picker-head { display: flex; justify-content: space-between; align-items: baseline; }
+.picker-list { flex: 1; overflow: auto; margin: 0 -8px; }
+.app-item { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px; border-radius: 10px; cursor: pointer; }
+.app-item:hover { background: var(--panel-2); }
+.app-item img { width: 36px; height: 36px; border-radius: 9px; }
+.app-item > span { display: flex; flex-direction: column; min-width: 0; }
+.app-item .app-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.app-item .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-item input { width: 20px; height: 20px; accent-color: var(--accent); }

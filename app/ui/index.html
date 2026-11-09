@@ -101,6 +101,7 @@
         <div class="row">
           <button class="btn primary" id="import-go" data-i18n="nodes.add"></button>
           <button class="btn ghost" id="import-paste" data-i18n="nodes.paste"></button>
+          <button class="btn ghost android-only" id="import-qr" data-i18n="nodes.qr"></button>
           <span class="muted small" id="import-hint"></span>
         </div>
       </div>
@@ -196,7 +197,7 @@
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.lang.t"></div><div class="set-desc" data-i18n="set.lang.d"></div></div><div class="set-ctl"><select id="set-lang"><option value="auto" data-i18n="set.lang.auto"></option><option value="en">English</option><option value="ru">Русский</option></select></div></div>
         <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.tray.t"></div><div class="set-desc" data-i18n="set.tray.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-tray" /><span></span></label></div></div>
         <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.autostart.t"></div><div class="set-desc" data-i18n="set.autostart.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-autostart" /><span></span></label></div></div>
-        <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.autoconnect.t"></div><div class="set-desc" data-i18n="set.autoconnect.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-autoconnect" /><span></span></label></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.autoconnect.t"></div><div class="set-desc" data-i18n="set.autoconnect.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-autoconnect" /><span></span></label></div></div>
         <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.startup.t"></div><div class="set-desc" data-i18n="set.startup.d"></div></div><div class="set-ctl"><select id="set-startup"><option value="last" data-i18n="set.startup.last"></option><option value="system_proxy" data-i18n="mode.proxy"></option><option value="proxy" data-i18n="mode.proxyOnly"></option><option value="tun" data-i18n="mode.tun"></option></select></div></div>
       </div>
       <div class="card set-card">
@@ -204,8 +205,13 @@
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.port.t"></div><div class="set-desc" data-i18n="set.port.d"></div></div><div class="set-ctl"><input type="number" id="set-port" placeholder="7890" /></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.lan.t"></div><div class="set-desc" data-i18n="set.lan.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-lan" /><span></span></label></div></div>
       </div>
+      <div class="card set-card android-only">
+        <h2 data-i18n="set.apps.h"></h2>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.apps.t"></div><div class="set-desc" data-i18n="set.apps.d"></div></div><div class="set-ctl"><select id="set-appsmode"><option value="all" data-i18n="set.apps.all"></option><option value="bypass" data-i18n="set.apps.bypass"></option><option value="only" data-i18n="set.apps.only"></option></select></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.apps.list"></div><div class="set-desc" id="set-apps-summary"></div></div><div class="set-ctl"><button class="btn" id="btn-apps" data-i18n="set.apps.choose"></button></div></div>
+      </div>
       <div class="card set-card">
-        <h2 data-i18n="sec.tun"></h2>
+        <h2 data-i18n="sec.tun" data-i18n-android="sec.vpn"></h2>
         <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.tunstack.t"></div><div class="set-desc" data-i18n="set.tunstack.d"></div></div><div class="set-ctl"><select id="set-tunstack"><option value="singbox" data-i18n="settings.tunSingbox"></option><option value="native" data-i18n="settings.tunNative"></option></select></div></div>
         <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.dnsleak.t"></div><div class="set-desc" data-i18n="set.dnsleak.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-dnsleak" /><span></span></label></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.quic.t"></div><div class="set-desc" data-i18n="set.quic.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-quic" /><span></span></label></div></div>

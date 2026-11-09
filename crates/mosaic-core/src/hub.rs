@@ -573,36 +573,135 @@ where
 
 /// Latency test through an engine inbound: time from SOCKS CONNECT to the
 /// first byte of the HTTP response (includes the proxy handshake).
+/// Connection time in ms (see `url_probe`): used by Smart Connect.
 pub async fn url_test(proxy_port: u16, url: &str) -> Result<u32, String> {
+    url_probe(proxy_port, url).await.map(|p| p.0)
+}
+
+/// What a finished HTTP response head tells us about reusing the connection.
+#[derive(Debug, PartialEq)]
+pub(crate) struct HeadInfo {
+    pub status: u16,
+    pub content_length: Option<usize>,
+    pub close: bool,
+}
+
+pub(crate) fn parse_head(head: &[u8]) -> Option<HeadInfo> {
+    let text = std::str::from_utf8(head).ok()?;
+    let mut lines = text.split("\r\n");
+    let status: u16 = lines.next()?.split_whitespace().nth(1)?.parse().ok()?;
+    let (mut content_length, mut close) = (None, false);
+    for l in lines {
+        let Some((k, v)) = l.split_once(':') else { continue };
+        let (k, v) = (k.trim().to_ascii_lowercase(), v.trim().to_ascii_lowercase());
+        if k == "content-length" {
+            content_length = v.parse().ok();
+        } else if k == "connection" && v.contains("close") {
+            close = true;
+        } else if k == "transfer-encoding" {
+            close = true; // chunked body: not worth parsing for a probe
+        }
+    }
+    if status == 204 || status == 304 {
+        content_length = Some(0);
+    }
+    Some(HeadInfo { status, content_length, close })
+}
+
+/// Latency probe through an engine inbound, two numbers:
+///   * connection — time to the first byte of a response on a new connection
+///     (TCP + TLS/REALITY handshakes with the node, the node connecting to the
+///     test site, the request): what every new connection costs;
+///   * round trip — a second request on the same connection: one round trip
+///     through the tunnel, comparable with "ping" in speed tests.
+pub async fn url_probe(proxy_port: u16, url: &str) -> Result<(u32, Option<u32>), String> {
     let rest = url.strip_prefix("http://").ok_or("latency test supports http:// URLs only")?;
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
     let (host, port) = split_hp(authority, 80).map_err(|e| e.to_string())?;
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mosaic\r\nConnection: keep-alive\r\n\r\n");
     let started = std::time::Instant::now();
-    let fut = async {
+    let first = async {
         let mut s = socks_connect(proxy_port, &host, port).await?;
-        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mosaic\r\nConnection: close\r\n\r\n");
         s.write_all(req.as_bytes()).await?;
-        let mut b = [0u8; 1];
-        let n = s.read(&mut b).await?;
-        if n == 0 {
-            return Err(other("server closed the connection"));
-        }
-        Ok::<(), io::Error>(())
+        let mut buf = Vec::with_capacity(2048);
+        let mut chunk = [0u8; 2048];
+        let mut ttfb = None;
+        let head_end = loop {
+            let n = s.read(&mut chunk).await?;
+            if n == 0 {
+                return Err(other("server closed the connection"));
+            }
+            ttfb.get_or_insert(started.elapsed().as_millis() as u32);
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(i) = find(&buf, b"\r\n\r\n") {
+                break Some(i + 4);
+            }
+            if buf.len() > 16 * 1024 {
+                break None;
+            }
+        };
+        let ms = ttfb.unwrap_or(0);
+        // Can the connection carry a second request? Then drain the body first.
+        let info = head_end.and_then(|e| parse_head(&buf[..e]).map(|h| (e, h)));
+        let reusable = match info {
+            Some((end, h)) if !h.close => match h.content_length {
+                Some(len) if len <= 64 * 1024 => {
+                    let mut have = buf.len() - end;
+                    while have < len {
+                        let n = s.read(&mut chunk).await?;
+                        if n == 0 {
+                            break;
+                        }
+                        have += n;
+                    }
+                    have == len
+                }
+                _ => false,
+            },
+            _ => false,
+        };
+        Ok::<_, io::Error>((ms, reusable.then_some(s)))
     };
-    match timeout(Duration::from_secs(8), fut).await {
-        Ok(Ok(())) => Ok(started.elapsed().as_millis() as u32),
-        Ok(Err(e)) => Err(e.to_string()),
-        Err(_) => Err("timeout".into()),
-    }
+    let (ms, conn) = match timeout(Duration::from_secs(8), first).await {
+        Ok(Ok(x)) => x,
+        Ok(Err(e)) => return Err(e.to_string()),
+        Err(_) => return Err("timeout".into()),
+    };
+    let rtt = match conn {
+        Some(mut s) => {
+            let second = async {
+                let t = std::time::Instant::now();
+                s.write_all(req.as_bytes()).await?;
+                let mut b = [0u8; 1];
+                let n = s.read(&mut b).await?;
+                Ok::<_, io::Error>((n > 0).then(|| t.elapsed().as_millis() as u32))
+            };
+            timeout(Duration::from_secs(4), second).await.ok().and_then(|r| r.ok()).flatten()
+        }
+        None => None,
+    };
+    Ok((ms, rtt))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::RuleKind;
+
+    #[test]
+    fn probe_heads() {
+        let h = parse_head(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nDate: x\r\n\r\n").unwrap();
+        assert_eq!(h, HeadInfo { status: 204, content_length: Some(0), close: false });
+        let h = parse_head(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 12\r\n\r\n").unwrap();
+        assert!(h.close);
+        assert_eq!(h.content_length, Some(12));
+        let h = parse_head(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap();
+        assert!(h.close);
+        assert!(parse_head(b"garbage").is_none());
+    }
 
     fn rule(kind: RuleKind, v: &str, t: &str) -> Rule {
         Rule { kind, value: v.into(), target: t.into(), enabled: true }

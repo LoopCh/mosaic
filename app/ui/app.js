@@ -227,13 +227,13 @@ function renderHome() {
   const n = selectedNode();
   const card = $('#current-node');
   if (n) {
-    const lat = n.latency && n.latency.ms != null ? `${n.latency.ms} ms` : '';
+    const lat = latHtml(n, false);
     card.innerHTML = `
       <div class="flag">${esc(avatar(n.name))}</div>
       <div class="grow"><div class="title">${esc(n.name)}</div>
       <div class="sub">${esc(n.summary)} · ${esc(n.server)}:${n.port}</div></div>
       ${snap.settings.smart_connect ? `<span class="badge auto">${t('smart.badge')}</span>` : ''}${engineBadge(n.effective)}
-      <span class="lat ${latClass(n)}">${lat}</span>
+      <span class="lat ${latClass(n)}" title="${esc(latTip(n))}">${lat}</span>
       <button class="btn" id="go-nodes">${t('home.change')}</button>`;
     $('#go-nodes').onclick = () => show('nodes');
   } else {
@@ -303,7 +303,22 @@ $$('#mode-seg button').forEach((b) => b.addEventListener('click', async () => {
 function latClass(n) {
   if (!n.latency) return '';
   if (n.latency.ms == null) return 'bad';
+  if (n.latency.rtt != null) return n.latency.rtt < 150 ? 'good' : n.latency.rtt < 400 ? 'mid' : 'bad';
   return n.latency.ms < 300 ? 'good' : n.latency.ms < 800 ? 'mid' : 'bad';
+}
+// Round trip (like "ping" in speed tests) first; the cost of a new connection underneath.
+function latHtml(n, withError) {
+  const l = n.latency;
+  if (!l) return '';
+  if (l.ms == null) return withError ? t('nodes.error') : '';
+  if (l.rtt == null) return `${l.ms} ms`;
+  return `${l.rtt} ms<small>${t('lat.conn', l.ms)}</small>`;
+}
+function latTip(n) {
+  const l = n.latency;
+  if (!l) return '';
+  if (l.error) return l.error;
+  return l.rtt != null ? t('lat.tip', l.rtt, l.ms) : t('lat.tipConn', l.ms);
 }
 
 function renderNodes() {
@@ -336,8 +351,8 @@ function renderNodes() {
     return;
   }
   $('#node-list').innerHTML = nodes.map((n) => {
-    const lat = n.latency ? (n.latency.ms != null ? `${n.latency.ms} ms` : t('nodes.error')) : '';
-    const latTitle = n.latency && n.latency.error ? esc(n.latency.error) : '';
+    const lat = latHtml(n, true);
+    const latTitle = esc(latTip(n));
     const autoLabel = n.engine === 'auto' && n.effective ? ` (${engineName(n.effective)})` : '';
     const opt = (v, label, ok) => `<option value="${v}" ${n.engine === v ? 'selected' : ''} ${ok ? '' : 'disabled'}>${label}</option>`;
     return `
@@ -384,9 +399,18 @@ $('#smart-toggle').addEventListener('change', (e) => withBusy(null, async () => 
 }));
 $('#btn-import').addEventListener('click', () => { $('#import-panel').classList.toggle('hidden'); $('#import-text').focus(); });
 $('#import-paste').addEventListener('click', async () => {
-  try { $('#import-text').value = await navigator.clipboard.readText(); }
-  catch { toast(t('nodes.clipboard'), 'info'); }
+  try {
+    $('#import-text').value = isAndroid() ? await invoke('read_clipboard') : await navigator.clipboard.readText();
+    $('#import-text').dispatchEvent(new Event('input'));
+  } catch { toast(t('nodes.clipboard'), 'info'); }
 });
+$('#import-qr').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const text = await invoke('scan_qr');
+  if (!text) return;
+  $('#import-text').value = text;
+  $('#import-text').dispatchEvent(new Event('input'));
+  $('#import-go').click();
+}));
 const isUrl = (s) => /^https?:\/\/\S+$/.test(s);
 $('#import-text').addEventListener('input', () => {
   $('#import-hint').textContent = isUrl($('#import-text').value.trim()) ? t('nodes.asSub') : '';
@@ -624,6 +648,8 @@ function renderSettings() {
   $('#set-tray').checked = s.close_to_tray !== false;
   $('#set-autostart').checked = !!s.autostart;
   $('#set-autoconnect').checked = !!s.auto_connect;
+  $('#set-appsmode').value = s.apps_mode || 'all';
+  renderAppsSummary();
   $('#set-remotedns').value = s.remote_dns || '';
   $('#set-iprule').value = s.ip_rule_dns || 'remote';
   $('#set-startup').value = s.startup_mode || 'last';
@@ -651,6 +677,7 @@ $('#settings-save').addEventListener('click', (e) => withBusy(e.currentTarget, a
     close_to_tray: $('#set-tray').checked,
     autostart: $('#set-autostart').checked,
     auto_connect: $('#set-autoconnect').checked,
+    apps_mode: $('#set-appsmode').value,
     remote_dns: $('#set-remotedns').value.trim() || '1.1.1.1',
     ip_rule_dns: $('#set-iprule').value,
     startup_mode: $('#set-startup').value,
@@ -679,6 +706,60 @@ $('#btn-app-check').addEventListener('click', (e) => withBusy(e.currentTarget, a
   snap = await invoke('snapshot');
   renderUpdateBanner();
   toast(u ? t('upd.available', u.version) : t('upd.none'), u ? 'ok' : 'info', 4000);
+}));
+
+// ------------------------------------------------------------------ apps (Android: which apps use the VPN)
+let appsCache = null;
+function renderAppsSummary() {
+  const n = (snap.settings.apps || []).length;
+  $('#set-apps-summary').textContent = n ? t('set.apps.count', n) : t('set.apps.none');
+}
+$('#btn-apps').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  if (!appsCache) appsCache = await invoke('list_apps');
+  const chosen = new Set(snap.settings.apps || []);
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-wrap';
+  wrap.innerHTML = `<div class="modal card picker" role="dialog" aria-modal="true">
+    <div class="picker-head"><b>${esc(t('set.apps.list'))}</b><span class="muted small" id="pk-count"></span></div>
+    <input id="pk-filter" placeholder="${esc(t('set.apps.search'))}" />
+    <div class="picker-list"></div>
+    <div class="modal-actions"><button class="btn ghost" data-a="0">${esc(t('dlg.cancel'))}</button><button class="btn primary" data-a="1">${esc(t('set.apps.done'))}</button></div>
+  </div>`;
+  const list = $('.picker-list', wrap);
+  const count = () => { $('#pk-count', wrap).textContent = t('set.apps.count', chosen.size); };
+  const draw = () => {
+    const f = $('#pk-filter', wrap).value.trim().toLowerCase();
+    // Chosen apps first, then by name.
+    const apps = appsCache
+      .filter((a) => !f || a.name.toLowerCase().includes(f) || a.pkg.toLowerCase().includes(f))
+      .sort((a, b) => (chosen.has(b.pkg) - chosen.has(a.pkg)) || a.name.localeCompare(b.name));
+    list.innerHTML = apps.map((a) => `
+      <label class="app-item"><img src="${a.icon || ''}" alt="" /><span><span class="app-name">${esc(a.name)}</span><span class="muted small">${esc(a.pkg)}</span></span>
+      <input type="checkbox" data-pkg="${esc(a.pkg)}" ${chosen.has(a.pkg) ? 'checked' : ''} /></label>`).join('');
+  };
+  list.addEventListener('change', (ev) => {
+    const pkg = ev.target.dataset.pkg;
+    if (!pkg) return;
+    if (ev.target.checked) chosen.add(pkg); else chosen.delete(pkg);
+    count();
+  });
+  $('#pk-filter', wrap).addEventListener('input', draw);
+  wrap.addEventListener('click', async (ev) => {
+    const a = ev.target.closest('[data-a]');
+    if (!a) return;
+    wrap.remove();
+    if (a.dataset.a !== '1') return;
+    let mode = $('#set-appsmode').value;
+    if (mode === 'all' && chosen.size) { mode = 'bypass'; $('#set-appsmode').value = mode; }
+    try {
+      await invoke('set_settings', { settings: { ...snap.settings, apps_mode: mode, apps: [...chosen] } });
+      snap = await invoke('snapshot');
+      renderAppsSummary();
+      toast(t('settings.saved'), 'ok', 2000);
+    } catch (err) { toast(err, 'error'); }
+  });
+  document.body.appendChild(wrap);
+  draw(); count();
 }));
 
 // ------------------------------------------------------------------ go

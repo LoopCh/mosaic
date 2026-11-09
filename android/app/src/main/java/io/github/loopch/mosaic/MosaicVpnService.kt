@@ -34,6 +34,10 @@ class MosaicVpnService : VpnService() {
 
         @Volatile private var pending: CompletableDeferred<String>? = null
 
+        /** True while connected through this service (for the tile and boot). */
+        @Volatile var running = false
+            private set
+
         /** Start and wait for the result: `{"ok":null}` or `{"err":"…"}`. */
         suspend fun start(ctx: Context, vpn: Boolean, port: Int): String {
             val d = CompletableDeferred<String>()
@@ -60,6 +64,7 @@ class MosaicVpnService : VpnService() {
                 thread {
                     val reply = if (vpn) startVpn() else Native.invoke("connect", "{}")
                     val failed = reply.contains("\"err\"")
+                    setRunning(!failed)
                     pending?.complete(reply)
                     pending = null
                     if (failed) {
@@ -72,7 +77,9 @@ class MosaicVpnService : VpnService() {
                 // Restarted by the system ("always-on VPN" or after being killed): reconnect as VPN.
                 goForeground(true, 0)
                 thread {
-                    if (startVpn().contains("\"err\"")) {
+                    val failed = startVpn().contains("\"err\"")
+                    setRunning(!failed)
+                    if (failed) {
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf()
                     }
@@ -92,7 +99,7 @@ class MosaicVpnService : VpnService() {
             .addAddress("fdfe:dcba:9876::1", 126)
             .addRoute("::", 0)
             .addDnsServer("172.19.0.2")
-            .addDisallowedApplication(packageName)
+        applyApps(builder)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
         val pfd = try {
             builder.establish()
@@ -103,7 +110,45 @@ class MosaicVpnService : VpnService() {
         return if (error.isEmpty()) Native.ok() else Native.err(error)
     }
 
+    /**
+     * Which apps use the VPN (Settings → Apps). Mosaic itself must never be inside:
+     * its engines and direct connections would loop back into the tunnel.
+     */
+    private fun applyApps(b: Builder) {
+        val s = Connector.settings()
+        val mode = s.optString("apps_mode", "all")
+        val list = s.optJSONArray("apps")
+        val apps = (0 until (list?.length() ?: 0)).map { list!!.getString(it) }.filter { it != packageName }
+        if (mode == "only" && apps.isNotEmpty()) {
+            var added = 0
+            for (a in apps) {
+                try {
+                    b.addAllowedApplication(a)
+                    added++
+                } catch (_: Exception) {
+                    // uninstalled since it was chosen
+                }
+            }
+            if (added > 0) return
+        }
+        b.addDisallowedApplication(packageName)
+        if (mode == "bypass") {
+            for (a in apps) {
+                try {
+                    b.addDisallowedApplication(a)
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
+    private fun setRunning(on: Boolean) {
+        running = on
+        Connector.refreshTile(this)
+    }
+
     private fun shutdown() {
+        setRunning(false)
         Native.invoke("disconnect", "{}")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -115,6 +160,7 @@ class MosaicVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        setRunning(false)
         thread { Native.invoke("disconnect", "{}") }
         super.onDestroy()
     }

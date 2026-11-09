@@ -353,6 +353,19 @@ pub enum StartupMode {
     Tun,
 }
 
+/// Android: which apps use the VPN.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AppsMode {
+    /// Every app.
+    #[default]
+    All,
+    /// Every app except the chosen ones.
+    Bypass,
+    /// Only the chosen apps.
+    Only,
+}
+
 /// How IP-based rules treat domain destinations.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -421,6 +434,9 @@ pub struct Settings {
     pub sub_update_hours: u32,
     /// Check GitHub for new Mosaic versions once a day.
     pub check_updates: bool,
+    /// Android: which apps go through the VPN, and the chosen package names.
+    pub apps_mode: AppsMode,
+    pub apps: Vec<String>,
 }
 
 impl Default for Settings {
@@ -447,6 +463,8 @@ impl Default for Settings {
             smart_connect: false,
             sub_update_hours: 12,
             check_updates: true,
+            apps_mode: AppsMode::All,
+            apps: Vec::new(),
         }
     }
 }

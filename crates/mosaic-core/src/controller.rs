@@ -31,7 +31,10 @@ use crate::util::{now_ms, LogBuf};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Latency {
+    /// Connection time: first response byte on a new connection (handshakes included).
     pub ms: Option<u32>,
+    /// One round trip through the tunnel on an open connection (like "ping" in speed tests).
+    pub rtt: Option<u32>,
     pub error: Option<String>,
     pub at_ms: u64,
 }
@@ -916,9 +919,9 @@ impl Controller {
         let mut set = JoinSet::new();
         for (id, u) in &upstreams {
             let (id, port, url) = (id.clone(), u.port, settings.test_url.clone());
-            set.spawn(async move { (id, hub::url_test(port, &url).await) });
+            set.spawn(async move { (id, hub::url_probe(port, &url).await) });
         }
-        let mut results: Vec<(String, Result<u32, String>)> = Vec::new();
+        let mut results: Vec<(String, Result<(u32, Option<u32>), String>)> = Vec::new();
         while let Some(r) = set.join_next().await {
             if let Ok(x) = r {
                 results.push(x);
@@ -929,18 +932,18 @@ impl Controller {
             let mut g = self.inner.lock().await;
             for (id, r) in &results {
                 let l = match r {
-                    Ok(ms) => Latency { ms: Some(*ms), error: None, at_ms: now },
-                    Err(e) => Latency { ms: None, error: Some(e.clone()), at_ms: now },
+                    Ok((ms, rtt)) => Latency { ms: Some(*ms), rtt: *rtt, error: None, at_ms: now },
+                    Err(e) => Latency { ms: None, rtt: None, error: Some(e.clone()), at_ms: now },
                 };
                 g.latency.insert(id.clone(), l);
             }
         }
-        let best = results.iter().filter_map(|(id, r)| r.as_ref().ok().map(|ms| (id.clone(), *ms))).min_by_key(|(_, ms)| *ms);
+        let best = results.iter().filter_map(|(id, r)| r.as_ref().ok().map(|(ms, _)| (id.clone(), *ms))).min_by_key(|(_, ms)| *ms);
         let Some((best_id, best_ms)) = best else {
             self.logs.push("[smart] no node answered the test");
             return;
         };
-        let current = selected.as_ref().and_then(|id| results.iter().find(|(i, _)| i == id)).and_then(|(_, r)| r.as_ref().ok().copied());
+        let current = selected.as_ref().and_then(|id| results.iter().find(|(i, _)| i == id)).and_then(|(_, r)| r.as_ref().ok().map(|(ms, _)| *ms));
         let current = current.or(current_ms);
         let switch = match current {
             None => true,                                                   // active node is down
@@ -1348,12 +1351,12 @@ impl Controller {
             if let Some(u) = upstreams.get(&n.id) {
                 let (id, port, url) = (n.id.clone(), u.port, url.clone());
                 set.spawn(async move {
-                    let r = hub::url_test(port, &url).await;
+                    let r = hub::url_probe(port, &url).await;
                     (id, r)
                 });
             }
         }
-        let mut results: Vec<(String, Result<u32, String>)> = Vec::new();
+        let mut results: Vec<(String, Result<(u32, Option<u32>), String>)> = Vec::new();
         while let Some(r) = set.join_next().await {
             if let Ok(x) = r {
                 results.push(x);
@@ -1367,13 +1370,13 @@ impl Controller {
         for n in &nodes {
             if !upstreams.contains_key(&n.id) {
                 let why = n.effective_engine().err().unwrap_or_else(|| "engine did not start".into());
-                g.latency.insert(n.id.clone(), Latency { ms: None, error: Some(why), at_ms: now });
+                g.latency.insert(n.id.clone(), Latency { ms: None, rtt: None, error: Some(why), at_ms: now });
             }
         }
         for (id, r) in results {
             let l = match r {
-                Ok(ms) => Latency { ms: Some(ms), error: None, at_ms: now },
-                Err(e) => Latency { ms: None, error: Some(e), at_ms: now },
+                Ok((ms, rtt)) => Latency { ms: Some(ms), rtt, error: None, at_ms: now },
+                Err(e) => Latency { ms: None, rtt: None, error: Some(e), at_ms: now },
             };
             g.latency.insert(id, l);
         }

@@ -1,4 +1,4 @@
-# Mosaic 0.5.1
+# Mosaic 0.6
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -6,6 +6,17 @@ that only carry traffic to servers. Rules can send different traffic to nodes on
 different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
+
+## New in 0.6
+
+- **Android — which apps use the VPN** (Settings → Apps): all apps, all except the chosen ones, or only
+  the chosen ones; app picker with icons and search.
+- **Android — Quick Settings tile:** connect/disconnect from the notification shade.
+- **Connect automatically** on Android: when the phone starts and when Mosaic is opened. Android's own
+  “Always-on VPN” (system VPN settings) is supported: the system starts Mosaic itself.
+- **Import from the clipboard** on Android and **QR code scanning** (Nodes → Import).
+- **Two latency numbers:** round trip through the node (comparable with “ping” in speed tests) and, smaller,
+  the time a new connection takes (handshakes with the node included). Smart Connect still compares new-connection times.
 
 ## New in 0.5.1
 
@@ -28,8 +39,8 @@ Interface languages: English, Русский (automatic, switchable in Settings)
 - Engines are updated together with the app on Android (the system does not allow running downloaded files).
 - Desktop: “Restore bundled versions” is shown only when updated engines are installed.
 
-Not in this version yet: per-app rules on Android, split tunnelling by app, auto-connect at boot,
-x86_64/armv7 builds, in-app APK updates (the banner opens the release page).
+Not in this version yet: rules by app inside the VPN on Android, x86_64/armv7 builds, in-app APK updates
+(the banner opens the release page).
 
 ### Android build
 
@@ -69,8 +80,8 @@ Keep `mosaic.jks` safe: an app signed with a lost key can never be updated.
 ### Releasing
 
 ```
-git tag v0.5.1
-git push origin v0.5.1
+git tag v0.6.0
+git push origin v0.6.0
 ```
 
 The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub

@@ -24,8 +24,8 @@ android {
         applicationId = "io.github.loopch.mosaic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 501
-        versionName = "0.5.1"
+        versionCode = 600
+        versionName = "0.6.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
@@ -73,4 +73,5 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

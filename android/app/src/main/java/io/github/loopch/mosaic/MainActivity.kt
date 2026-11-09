@@ -2,7 +2,12 @@ package io.github.loopch.mosaic
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ClipboardManager
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.util.Base64
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.VpnService
@@ -22,7 +27,11 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 
 /**
  * The window: the desktop UI (app/ui) in a WebView. `invoke(cmd, args)` from JS goes
@@ -31,8 +40,16 @@ import org.json.JSONObject
  */
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        /** Connect right away (from the Quick Settings tile when it could not do it itself). */
+        const val EXTRA_CONNECT = "connect"
+    }
+
     private lateinit var web: WebView
     private var vpnPermission: CompletableDeferred<Boolean>? = null
+    private var qrResult: CompletableDeferred<String?>? = null
+
+    private val scanQr = registerForActivityResult(ScanContract()) { r -> qrResult?.complete(r.contents) }
 
     private val askVpn = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         vpnPermission?.complete(r.resultCode == RESULT_OK)
@@ -65,11 +82,34 @@ class MainActivity : ComponentActivity() {
         }
         setContentView(web)
 
+        maybeAutoConnect(intent)
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 moveTaskToBack(true)
             }
         })
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        maybeAutoConnect(intent)
+    }
+
+    /** "Connect automatically" (when Mosaic is opened) or a request from the tile. */
+    private fun maybeAutoConnect(intent: Intent?) {
+        val asked = intent?.getBooleanExtra(EXTRA_CONNECT, false) == true
+        intent?.removeExtra(EXTRA_CONNECT)
+        lifecycleScope.launch {
+            val auto = withContext(Dispatchers.IO) { Connector.settings().optBoolean("auto_connect") }
+            if ((asked || auto) && !MosaicVpnService.running) {
+                val reply = connect()
+                if (reply.contains("\"err\"")) {
+                    val msg = JSONObject(reply).optString("err")
+                    web.evaluateJavascript("window.toast && toast(${JSONObject.quote(msg)}, 'error')", null)
+                }
+            }
+        }
     }
 
     private fun openUrl(url: String) {
@@ -79,17 +119,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun connected(): Boolean = try {
-        JSONObject(Native.invoke("snapshot", "{}")).getJSONObject("ok").getJSONObject("status").getBoolean("connected")
-    } catch (e: Exception) {
-        false
-    }
-
     /** Connect through the foreground service (asking for the VPN permission when needed). */
     private suspend fun connect(): String {
-        val mode = withContext(Dispatchers.IO) { Native.mode() }
-        val vpn = mode != "proxy"
-        if (vpn) {
+        val settings = withContext(Dispatchers.IO) { Connector.settings() }
+        if (settings.optString("mode", "tun") != "proxy") {
             val intent = VpnService.prepare(this)
             if (intent != null) {
                 val d = CompletableDeferred<Boolean>()
@@ -103,12 +136,11 @@ class MainActivity : ComponentActivity() {
         ) {
             withContext(Dispatchers.Main) { askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS) }
         }
-        val port = withContext(Dispatchers.IO) { Native.listenPort() }
-        return MosaicVpnService.start(this, vpn, port)
+        return Connector.start(this)
     }
 
     private suspend fun disconnect(): String {
-        MosaicVpnService.stop(this)
+        Connector.stop(this)
         return withContext(Dispatchers.IO) { Native.invoke("disconnect", "{}") }
     }
 
@@ -123,7 +155,7 @@ class MainActivity : ComponentActivity() {
         // The VPN interface belongs to the service: when a change needs a reconnect,
         // reconnect through it rather than inside the core.
         "set_settings" -> {
-            val wasConnected = withContext(Dispatchers.IO) { connected() }
+            val wasConnected = withContext(Dispatchers.IO) { Connector.connected() }
             if (wasConnected) disconnect()
             val reply = withContext(Dispatchers.IO) { Native.invoke(cmd, args) }
             if (wasConnected) {
@@ -131,7 +163,57 @@ class MainActivity : ComponentActivity() {
                 if (r.contains("\"err\"")) r else reply
             } else reply
         }
+        "read_clipboard" -> {
+            val cm = getSystemService(ClipboardManager::class.java)
+            val text = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString() ?: ""
+            Native.ok(text)
+        }
+        "scan_qr" -> {
+            val d = CompletableDeferred<String?>()
+            qrResult = d
+            scanQr.launch(
+                ScanOptions()
+                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setPrompt("")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+            )
+            Native.ok(d.await() ?: "")
+        }
+        "list_apps" -> withContext(Dispatchers.IO) { Native.ok(listApps()) }
         else -> withContext(Dispatchers.IO) { Native.invoke(cmd, args) }
+    }
+
+    /** Launchable apps with a small icon (data: URL), for Settings → Apps. */
+    private fun listApps(): JSONArray {
+        val pm = packageManager
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val seen = HashSet<String>()
+        val out = JSONArray()
+        @Suppress("DEPRECATION")
+        for (ri in pm.queryIntentActivities(launcher, 0)) {
+            val ai: ApplicationInfo = ri.activityInfo.applicationInfo
+            if (ai.packageName == packageName || !seen.add(ai.packageName)) continue
+            out.put(
+                JSONObject()
+                    .put("pkg", ai.packageName)
+                    .put("name", ri.loadLabel(pm).toString())
+                    .put("icon", iconDataUrl(ri.loadIcon(pm)))
+            )
+        }
+        return out
+    }
+
+    private fun iconDataUrl(d: android.graphics.drawable.Drawable): String = try {
+        val size = 48
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        d.setBounds(0, 0, size, size)
+        d.draw(c)
+        val bytes = ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        "data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+    } catch (e: Exception) {
+        ""
     }
 
     inner class Bridge {

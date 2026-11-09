@@ -56,6 +56,8 @@ pub struct Status {
     pub down: u64,
     pub active_conns: usize,
     pub listen_port: Option<u16>,
+    /// The local proxy accepts connections from the LAN.
+    pub lan: bool,
     pub system_proxy: bool,
     pub tun: bool,
     /// DNS leak protection (WFP filters) is active.
@@ -90,6 +92,8 @@ pub struct Snapshot {
     pub is_admin: bool,
     pub data_dir: String,
     pub native_tun_available: bool,
+    /// This computer's address in the local network (for "allow LAN").
+    pub lan_ip: Option<String>,
     pub geoip_file: Option<String>,
     pub geosite_file: Option<String>,
 }
@@ -113,6 +117,7 @@ struct Session {
     upstreams: HashMap<String, Upstream>,
     mode: Mode,
     tun_stack: TunStack,
+    lan: bool,
     system_proxy: bool,
     started_ms: u64,
     /// sing-box adapter: SOCKS port used for the hub's "direct" traffic.
@@ -188,6 +193,14 @@ fn server_domains(nodes: &[Node]) -> Vec<String> {
     v.sort();
     v.dedup();
     v
+}
+
+/// Address of the interface used for the default route (no packets are sent).
+fn lan_ip() -> Option<String> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("192.0.2.1:9").ok()?;
+    let ip = s.local_addr().ok()?.ip();
+    (!ip.is_unspecified() && !ip.to_string().starts_with("172.19.0.")).then(|| ip.to_string())
 }
 
 fn fix_selection(st: &mut State) {
@@ -266,6 +279,26 @@ impl Controller {
         self.inner.lock().await.state.settings.clone()
     }
 
+    /// Apply the configured start-up mode before an automatic connect.
+    /// TUN without administrator rights falls back to the system proxy.
+    pub async fn prepare_startup(&self) {
+        let mut g = self.inner.lock().await;
+        let wanted = match g.state.settings.startup_mode {
+            StartupMode::Last => return,
+            StartupMode::SystemProxy => Mode::SystemProxy,
+            StartupMode::Proxy => Mode::Proxy,
+            StartupMode::Tun if self.admin => Mode::Tun,
+            StartupMode::Tun => {
+                self.logs.push("[app] start-up mode is TUN, but Mosaic runs without administrator rights — using the system proxy");
+                Mode::SystemProxy
+            }
+        };
+        if g.state.settings.mode != wanted {
+            g.state.settings.mode = wanted;
+            self.save(&g.state);
+        }
+    }
+
     fn save(&self, st: &State) {
         if let Err(e) = store::save_state(&self.dir, st) {
             self.logs.push(format!("[hub] could not save settings: {e}"));
@@ -339,6 +372,7 @@ impl Controller {
             down: self.stats.down.load(Relaxed),
             active_conns: self.stats.active_count(),
             listen_port: s.map(|s| s.hub.port),
+            lan: s.map_or(false, |s| s.lan),
             system_proxy: s.map_or(false, |s| s.system_proxy),
             tun: s.map_or(false, |s| s.tun_up()),
             dns_protected: s.map_or(false, |s| s.dns_protected()),
@@ -368,6 +402,7 @@ impl Controller {
             is_admin: self.admin,
             data_dir: self.dir.display().to_string(),
             native_tun_available: cfg!(feature = "native-tun"),
+            lan_ip: if st.settings.allow_lan { lan_ip() } else { None },
             geoip_file,
             geosite_file,
         }
@@ -575,6 +610,7 @@ impl Controller {
                     || old.tun_stack != new.tun_stack
                     || old.direct_dns != new.direct_dns
                     || old.dns_leak_protection != new.dns_leak_protection
+                    || old.allow_lan != new.allow_lan
                     || (new.mode == Mode::Tun && old.remote_dns != new.remote_dns && new.tun_stack == TunStack::Singbox))
         };
         if restart {
@@ -715,6 +751,7 @@ impl Controller {
         let draft = Session {
             hub: match Hub::start(
                 settings.listen_port,
+                settings.allow_lan,
                 Routing::basic(Vec::new(), "block"),
                 self.stats.clone(),
                 self.logs.clone(),
@@ -736,6 +773,7 @@ impl Controller {
             upstreams,
             mode: settings.mode,
             tun_stack: settings.tun_stack,
+            lan: settings.allow_lan,
             system_proxy: false,
             started_ms: now_ms(),
             direct_port,
@@ -770,6 +808,14 @@ impl Controller {
                 }
                 Err(e) => Err(format!("Could not enable the system proxy: {e}")),
             },
+            (Mode::Proxy, _) => {
+                let host = if settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" };
+                self.logs.push(format!(
+                    "[hub] proxy mode: set SOCKS5 or HTTP proxy {host}:{} in your apps",
+                    settings.listen_port
+                ));
+                Ok(())
+            }
             (Mode::Tun, TunStack::Singbox) => {
                 let dp = direct_port.unwrap_or(0);
                 let domains = server_domains(&nodes);

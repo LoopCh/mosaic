@@ -1,4 +1,4 @@
-# Mosaic 0.2.2
+# Mosaic 0.2.3
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -24,6 +24,16 @@ Interface languages: English, Русский (automatic, switchable in Settings)
   rules that block DNS (port 53) everywhere except the TUN interface; Mosaic and its engines are
   exempt. The WFP session is dynamic, so Windows removes the rules automatically even if Mosaic
   crashes. Toggle: Settings → “DNS leak protection”. Status is shown on the Home screen.
+
+## New in 0.2.3
+
+- **Three modes:** System proxy · Proxy (local proxy only, Windows settings untouched) · TUN.
+- **Allow devices in the local network:** phones/TVs can use this PC as a SOCKS5/HTTP proxy
+  (the Home screen shows the address). No password — trusted networks only.
+- **Mode on start:** last used / system proxy / proxy / TUN (TUN without admin rights falls back
+  to the system proxy).
+- **Settings reorganised** into General · Local proxy · TUN mode · DNS · Advanced, each option
+  with a plain-language description.
 
 ## New in 0.2.2
 
@@ -69,6 +79,7 @@ portable archives (Actions → Artifacts): `Mosaic-windows-x64` (stable) and
 mosaic-cli import "vless://…"      mosaic-cli sub https://example.com/sub
 mosaic-cli list                     mosaic-cli test
 mosaic-cli run                      # system proxy, Ctrl+C to quit
+mosaic-cli run --proxy-only         # local proxy only
 mosaic-cli run --tun                # TUN via the sing-box adapter (admin console)
 mosaic-cli run --tun --native       # native TUN (native-tun build, admin console)
 ```

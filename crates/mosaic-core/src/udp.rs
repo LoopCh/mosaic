@@ -121,9 +121,15 @@ struct Session {
 }
 
 pub async fn associate(mut ctrl: TcpStream, shared: SharedRouting, stats: Arc<Stats>) -> io::Result<()> {
-    let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+    // Answer with the address the client reached us on (loopback or the LAN address).
+    let local_ip = match ctrl.local_addr()?.ip() {
+        IpAddr::V4(v4) => v4,
+        IpAddr::V6(_) => Ipv4Addr::LOCALHOST,
+    };
+    let sock = Arc::new(UdpSocket::bind(SocketAddr::new(IpAddr::V4(local_ip), 0)).await?);
     let port = sock.local_addr()?.port();
-    let mut rep = vec![5u8, 0, 0, 1, 127, 0, 0, 1];
+    let mut rep = vec![5u8, 0, 0, 1];
+    rep.extend_from_slice(&local_ip.octets());
     rep.extend_from_slice(&port.to_be_bytes());
     ctrl.write_all(&rep).await?;
     let mut sess = Session {

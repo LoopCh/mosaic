@@ -225,3 +225,23 @@ select { cursor: pointer; }
 .form select { width: 100%; }
 
 .form-group { margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--text); font-weight: 600; }
+
+/* ---------- settings (0.2.3) */
+.settings { display: flex; flex-direction: column; gap: 16px; max-width: 860px; }
+.set-card { padding: 6px 20px; }
+.set-card h2 { font-size: 15px; font-weight: 650; margin: 14px 0 4px; }
+.set-row { display: flex; align-items: center; gap: 24px; padding: 14px 0; border-top: 1px solid var(--line); }
+.set-card h2 + .set-row { border-top: 0; }
+.set-text { flex: 1; min-width: 0; }
+.set-title { font-weight: 550; }
+.set-desc { color: var(--muted); font-size: 12.5px; margin-top: 4px; line-height: 1.45; }
+.set-ctl { flex: none; width: 320px; display: flex; justify-content: flex-end; }
+.set-ctl select, .set-ctl input { width: 100%; }
+.set-info { padding: 0 4px 20px; line-height: 1.6; }
+.switch { position: relative; width: 42px; height: 24px; cursor: pointer; }
+.switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.switch span { position: absolute; inset: 0; background: #2a3042; border-radius: 999px; transition: background .2s; }
+.switch span::after { content: ""; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%; background: #cfd3e3; transition: transform .2s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(18px); background: white; }
+.switch input:focus-visible + span { box-shadow: 0 0 0 3px rgba(124, 92, 255, .35); }

@@ -150,13 +150,16 @@ function renderHome() {
   if (st.connected) {
     $('#hero-sub').textContent = st.tun
       ? (st.tun_stack === 'native' ? t('hero.viaTunNative') : t('hero.viaTun')) + ' · ' + (st.dns_protected ? t('hero.dnsOk') : t('hero.dnsOff'))
-      : st.system_proxy ? t('hero.viaProxy', st.listen_port) : t('hero.viaPort', st.listen_port);
+      : st.system_proxy ? t('hero.viaProxy', st.listen_port)
+      : t('hero.viaPort', (st.lan ? (snap.lan_ip || t('hero.lanAddr')) : '127.0.0.1') + ':' + st.listen_port);
   } else {
     $('#hero-sub').textContent = snap.nodes.length ? t('hero.click') : t('hero.addNode');
   }
   $$('#mode-seg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === snap.settings.mode));
+  const port = snap.settings.listen_port;
   $('#mode-hint').textContent = snap.settings.mode === 'tun'
     ? (!snap.is_admin ? t('hint.tunAdmin') : snap.settings.tun_stack === 'native' ? t('hint.tunNative') : t('hint.tunSingbox'))
+    : snap.settings.mode === 'proxy' ? t('hint.proxyOnly', (snap.settings.allow_lan ? (snap.lan_ip || t('hero.lanAddr')) : '127.0.0.1') + ':' + port)
     : t('hint.proxy');
 
   const n = selectedNode();
@@ -504,6 +507,8 @@ function renderSettings() {
   $('#set-autoconnect').checked = !!s.auto_connect;
   $('#set-remotedns').value = s.remote_dns || '';
   $('#set-iprule').value = s.ip_rule_dns || 'remote';
+  $('#set-startup').value = s.startup_mode || 'last';
+  $('#set-lan').checked = !!s.allow_lan;
   $('#set-testurl').value = s.test_url;
   $('#set-ua').value = s.user_agent;
   $('#set-dns').value = s.direct_dns || '';
@@ -526,6 +531,8 @@ $('#settings-save').addEventListener('click', (e) => withBusy(e.currentTarget, a
     auto_connect: $('#set-autoconnect').checked,
     remote_dns: $('#set-remotedns').value.trim() || '1.1.1.1',
     ip_rule_dns: $('#set-iprule').value,
+    startup_mode: $('#set-startup').value,
+    allow_lan: $('#set-lan').checked,
     test_url: $('#set-testurl').value.trim(),
     user_agent: $('#set-ua').value.trim(),
     direct_dns: $('#set-dns').value.trim() || '8.8.8.8',

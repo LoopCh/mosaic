@@ -49,6 +49,7 @@
           <div class="hero-sub muted" id="hero-sub"></div>
           <div class="seg" id="mode-seg">
             <button data-mode="system_proxy" data-i18n="mode.proxy"></button>
+            <button data-mode="proxy" data-i18n="mode.proxyOnly"></button>
             <button data-mode="tun" data-i18n="mode.tun"></button>
           </div>
           <div class="hint muted small" id="mode-hint"></div>
@@ -176,45 +177,39 @@
       <header class="view-head"><h1 data-i18n="nav.settings"></h1>
         <div class="actions"><button class="btn primary" id="settings-save" data-i18n="settings.save"></button></div>
       </header>
-      <div class="card form">
-        <label><span data-i18n="settings.language"></span>
-          <select id="set-lang">
-            <option value="auto" data-i18n="settings.langAuto"></option>
-            <option value="en">English</option>
-            <option value="ru">Русский</option>
-          </select>
-        </label>
-        <label><span data-i18n="settings.port"></span><input type="number" id="set-port" min="1024" max="65535" /></label>
-        <label><span data-i18n="settings.tunStack"></span>
-          <select id="set-tunstack">
-            <option value="singbox" data-i18n="settings.tunSingbox"></option>
-            <option value="native" data-i18n="settings.tunNative"></option>
-          </select>
-        </label>
-        <label><span data-i18n="settings.strategy"></span>
-          <select id="set-strategy">
-            <option value="as_is" data-i18n="settings.asIs"></option>
-            <option value="ip_if_non_match" data-i18n="settings.ipIfNonMatch"></option>
-          </select>
-        </label>
-        <label class="check"><input type="checkbox" id="set-quic" /> <span data-i18n="settings.quic"></span></label>
-        <label class="check"><input type="checkbox" id="set-dnsleak" /> <span data-i18n="settings.dnsLeak"></span></label>
-        <div class="form-group" data-i18n="settings.groupApp"></div>
-        <label class="check"><input type="checkbox" id="set-tray" /> <span data-i18n="settings.closeToTray"></span></label>
-        <label class="check"><input type="checkbox" id="set-autostart" /> <span data-i18n="settings.autostart"></span></label>
-        <label class="check"><input type="checkbox" id="set-autoconnect" /> <span data-i18n="settings.autoConnect"></span></label>
-        <div class="form-group" data-i18n="settings.groupDns"></div>
-        <label><span data-i18n="settings.remoteDns"></span><input id="set-remotedns" placeholder="1.1.1.1" /></label>
-        <label><span data-i18n="settings.ipRuleDns"></span>
-          <select id="set-iprule">
-            <option value="remote" data-i18n="settings.ipRuleRemote"></option>
-            <option value="local" data-i18n="settings.ipRuleLocal"></option>
-          </select>
-        </label>
-        <label><span data-i18n="settings.dns"></span><input id="set-dns" placeholder="8.8.8.8" /></label>
-        <label><span data-i18n="settings.testUrl"></span><input id="set-testurl" /></label>
-        <label><span data-i18n="settings.ua"></span><input id="set-ua" /></label>
-        <div class="muted small" id="set-info"></div>
+      <div class="settings">
+      <div class="card set-card">
+        <h2 data-i18n="sec.general"></h2>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.lang.t"></div><div class="set-desc" data-i18n="set.lang.d"></div></div><div class="set-ctl"><select id="set-lang"><option value="auto" data-i18n="set.lang.auto"></option><option value="en">English</option><option value="ru">Русский</option></select></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.tray.t"></div><div class="set-desc" data-i18n="set.tray.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-tray" /><span></span></label></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.autostart.t"></div><div class="set-desc" data-i18n="set.autostart.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-autostart" /><span></span></label></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.autoconnect.t"></div><div class="set-desc" data-i18n="set.autoconnect.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-autoconnect" /><span></span></label></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.startup.t"></div><div class="set-desc" data-i18n="set.startup.d"></div></div><div class="set-ctl"><select id="set-startup"><option value="last" data-i18n="set.startup.last"></option><option value="system_proxy" data-i18n="mode.proxy"></option><option value="proxy" data-i18n="mode.proxyOnly"></option><option value="tun" data-i18n="mode.tun"></option></select></div></div>
+      </div>
+      <div class="card set-card">
+        <h2 data-i18n="sec.connection"></h2>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.port.t"></div><div class="set-desc" data-i18n="set.port.d"></div></div><div class="set-ctl"><input type="number" id="set-port" placeholder="7890" /></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.lan.t"></div><div class="set-desc" data-i18n="set.lan.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-lan" /><span></span></label></div></div>
+      </div>
+      <div class="card set-card">
+        <h2 data-i18n="sec.tun"></h2>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.tunstack.t"></div><div class="set-desc" data-i18n="set.tunstack.d"></div></div><div class="set-ctl"><select id="set-tunstack"><option value="singbox" data-i18n="settings.tunSingbox"></option><option value="native" data-i18n="settings.tunNative"></option></select></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.dnsleak.t"></div><div class="set-desc" data-i18n="set.dnsleak.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-dnsleak" /><span></span></label></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.quic.t"></div><div class="set-desc" data-i18n="set.quic.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-quic" /><span></span></label></div></div>
+      </div>
+      <div class="card set-card">
+        <h2 data-i18n="sec.dns"></h2>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.remotedns.t"></div><div class="set-desc" data-i18n="set.remotedns.d"></div></div><div class="set-ctl"><input type="text" id="set-remotedns" placeholder="1.1.1.1" /></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.strategy.t"></div><div class="set-desc" data-i18n="set.strategy.d"></div></div><div class="set-ctl"><select id="set-strategy"><option value="as_is" data-i18n="settings.asIs"></option><option value="ip_if_non_match" data-i18n="settings.ipIfNonMatch"></option></select></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.iprule.t"></div><div class="set-desc" data-i18n="set.iprule.d"></div></div><div class="set-ctl"><select id="set-iprule"><option value="remote" data-i18n="settings.ipRuleRemote"></option><option value="local" data-i18n="settings.ipRuleLocal"></option></select></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.directdns.t"></div><div class="set-desc" data-i18n="set.directdns.d"></div></div><div class="set-ctl"><input type="text" id="set-dns" placeholder="8.8.8.8" /></div></div>
+      </div>
+      <div class="card set-card">
+        <h2 data-i18n="sec.advanced"></h2>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.testurl.t"></div><div class="set-desc" data-i18n="set.testurl.d"></div></div><div class="set-ctl"><input type="text" id="set-testurl" placeholder="http://www.gstatic.com/generate_204" /></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.ua.t"></div><div class="set-desc" data-i18n="set.ua.d"></div></div><div class="set-ctl"><input type="text" id="set-ua" placeholder="Mosaic/0.2" /></div></div>
+      </div>
+        <div class="muted small set-info" id="set-info"></div>
       </div>
     </section>
   </main>

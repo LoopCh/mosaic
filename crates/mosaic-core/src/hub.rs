@@ -196,13 +196,15 @@ pub struct Hub {
 }
 
 impl Hub {
-    pub async fn start(port: u16, routing: Routing, stats: Arc<Stats>, logs: Arc<LogBuf>) -> Result<Hub, String> {
-        let listener = TcpListener::bind(("127.0.0.1", port))
+    /// `allow_lan`: listen on all interfaces instead of loopback only.
+    pub async fn start(port: u16, allow_lan: bool, routing: Routing, stats: Arc<Stats>, logs: Arc<LogBuf>) -> Result<Hub, String> {
+        let host = if allow_lan { "0.0.0.0" } else { "127.0.0.1" };
+        let listener = TcpListener::bind((host, port))
             .await
-            .map_err(|e| format!("127.0.0.1:{port} is busy or unavailable: {e}"))?;
+            .map_err(|e| format!("{host}:{port} is busy or unavailable: {e}"))?;
         let routing: SharedRouting = Arc::new(RwLock::new(Arc::new(routing)));
         let shared = routing.clone();
-        logs.push(format!("[hub] listening on 127.0.0.1:{port} (SOCKS5 + HTTP)"));
+        logs.push(format!("[hub] listening on {host}:{port} (SOCKS5 + HTTP)"));
         let task = tokio::spawn(async move {
             loop {
                 match listener.accept().await {

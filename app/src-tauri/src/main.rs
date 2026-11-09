@@ -267,6 +267,7 @@ fn main() {
             let ctl = app.state::<Arc<Controller>>().inner().clone();
             tauri::async_runtime::spawn(async move {
                 if ctl.settings().await.auto_connect {
+                    ctl.prepare_startup().await;
                     if let Err(e) = ctl.connect().await {
                         ctl.logs.push(format!("[app] auto-connect failed: {e}"));
                         show_main(&handle);

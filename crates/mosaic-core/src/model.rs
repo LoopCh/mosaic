@@ -321,8 +321,24 @@ pub struct Rule {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
+    /// Local proxy + Windows system proxy settings.
     #[default]
     SystemProxy,
+    /// Local proxy only; apps are configured manually.
+    Proxy,
+    /// All traffic through the TUN interface.
+    Tun,
+}
+
+/// Mode used when Mosaic connects automatically at start.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StartupMode {
+    /// Whatever mode was used last.
+    #[default]
+    Last,
+    SystemProxy,
+    Proxy,
     Tun,
 }
 
@@ -385,6 +401,9 @@ pub struct Settings {
     pub autostart: bool,
     /// Connect automatically when Mosaic starts.
     pub auto_connect: bool,
+    pub startup_mode: StartupMode,
+    /// Listen on all interfaces so other devices in the LAN can use the proxy.
+    pub allow_lan: bool,
 }
 
 impl Default for Settings {
@@ -406,6 +425,8 @@ impl Default for Settings {
             close_to_tray: true,
             autostart: false,
             auto_connect: false,
+            startup_mode: StartupMode::Last,
+            allow_lan: false,
         }
     }
 }

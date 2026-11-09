@@ -15,7 +15,7 @@ const HELP: &str = "mosaic-cli — Mosaic without the UI
   select <n>                 select the active node
   engine <n> <auto|xray|singbox>   choose the engine for a node
   test                       latency test for all nodes
-  run [--tun [--native]]     connect and run until Ctrl+C
+  run [--tun [--native] | --proxy-only]   connect and run until Ctrl+C
   config                     where settings and generated configs live
 ";
 
@@ -117,7 +117,13 @@ async fn run(ctl: &Controller, args: &[String]) -> Result<(), String> {
         "run" => {
             ctl.logs.set_echo(true);
             let mut settings = ctl.snapshot().await.settings;
-            settings.mode = if args.iter().any(|a| a == "--tun") { Mode::Tun } else { Mode::SystemProxy };
+            settings.mode = if args.iter().any(|a| a == "--tun") {
+                Mode::Tun
+            } else if args.iter().any(|a| a == "--proxy-only") {
+                Mode::Proxy
+            } else {
+                Mode::SystemProxy
+            };
             settings.tun_stack = if args.iter().any(|a| a == "--native") { TunStack::Native } else { TunStack::Singbox };
             ctl.set_settings(settings).await?;
             ctl.connect().await?;

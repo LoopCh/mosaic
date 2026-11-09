@@ -1,4 +1,4 @@
-# Mosaic 0.7.3
+# Mosaic 0.7.4
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -6,6 +6,18 @@ that only carry traffic to servers. Rules can send different traffic to nodes on
 different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
+
+## New in 0.7.4
+
+- Linux TUN uses sing-box's gVisor stack: with the system/mixed stack, packets went through the INPUT
+  firewall chain, and ufw/firewalld (enabled by default on CachyOS, Fedora and others) dropped them —
+  the interface was up but nothing passed.
+- Linux: a warning in Logs when Mosaic runs as root (the system proxy then applies to root, not to the
+  desktop user). Run Mosaic as a normal user; TUN asks for the password itself.
+- The “Install” update button works again (it failed after the confirmation dialog).
+- Linux with systemd-resolved: the one-time password prompt also installs a polkit rule
+  (`/etc/polkit-1/rules.d/49-mosaic.rules`, only for your user) so that connecting and switching
+  nodes no longer asks “reset name resolution settings” / “flush DNS caches”. Delete the file to undo.
 
 ## New in 0.7.3
 
@@ -133,8 +145,8 @@ Keep `mosaic.jks` safe: an app signed with a lost key can never be updated.
 ### Releasing
 
 ```
-git tag v0.7.3
-git push origin v0.7.3
+git tag v0.7.4
+git push origin v0.7.4
 ```
 
 The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub

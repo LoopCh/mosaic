@@ -242,10 +242,14 @@ pub fn compile_tun(
         dns_rules.push(json!({ "domain": server_domains, "server": "direct-dns" }));
     }
     dns_rules.push(json!({ "query_type": ["A", "AAAA"], "server": "fakeip" }));
+    // Linux: the "system"/"mixed" stacks hand TCP to a listener on the TUN address, so
+    // packets pass the INPUT firewall chain — ufw/firewalld (default on CachyOS, Fedora…)
+    // drop them and nothing works. gVisor keeps the whole stack in userspace.
+    let stack = if cfg!(target_os = "linux") { "gvisor" } else { "mixed" };
     let mut tun = json!({
         "type": "tun", "tag": "tun-in", "interface_name": "Mosaic",
         "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
-        "mtu": 9000, "auto_route": true, "strict_route": true, "stack": "mixed"
+        "mtu": 9000, "auto_route": true, "strict_route": true, "stack": stack
     });
     // Node servers bypass the TUN at the routing level: loop-free even when the
     // process of an engine cannot be identified.

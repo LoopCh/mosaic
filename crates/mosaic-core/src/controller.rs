@@ -322,8 +322,16 @@ impl Controller {
         }
         logs.push(format!("[hub] data: {}", dir.display()));
         #[cfg(target_os = "linux")]
-        for l in crate::linux::install_bundled(&engines::bundled_copy_dir()) {
-            logs.push(l);
+        {
+            for l in crate::linux::install_bundled(&engines::bundled_copy_dir()) {
+                logs.push(l);
+            }
+            if sys::is_admin() {
+                logs.push(
+                    "[hub] Mosaic is running as root: the system proxy is then set for root, not for your desktop user. \
+                     Start Mosaic as your normal user — TUN asks for the password itself.",
+                );
+            }
         }
         let close_to_tray = AtomicBool::new(state.settings.close_to_tray);
         Self {
@@ -1143,7 +1151,7 @@ impl Controller {
             settings.tun_stack = TunStack::Singbox;
             let engine = engines::find(EngineKind::Singbox).ok_or("TUN mode needs sing-box in the engines folder")?;
             let exe = crate::linux::tun_binary(&engine, &engines::bundled_copy_dir())?;
-            if !sys::is_admin() && !crate::linux::has_caps(&exe) {
+            if !sys::is_admin() && !crate::linux::tun_ready(&exe) {
                 self.logs.push("[hub] asking for permission to create the TUN interface (one-time)…");
                 tokio::task::spawn_blocking(move || crate::linux::grant_tun(&exe))
                     .await

@@ -201,25 +201,83 @@ pub fn has_caps(exe: &Path) -> bool {
     n > 0
 }
 
+const POLKIT_RULE: &str = "/etc/polkit-1/rules.d/49-mosaic.rules";
+
+/// systemd-resolved is in use: the TUN adapter then sets the DNS of its interface through
+/// it, and polkit asks for a password every time ("reset name resolution settings",
+/// "flush DNS caches") unless a rule allows it.
+fn resolved_active() -> bool {
+    Path::new("/run/systemd/resolve/io.systemd.Resolve").exists() || Path::new("/run/systemd/resolve/resolv.conf").exists()
+}
+
+fn polkit_rule_text(user: &str) -> String {
+    let user = user.replace(['"', '\\'], "");
+    format!(
+        r#"// Installed by Mosaic: lets {user} set and reset the DNS of network interfaces
+// (what the Mosaic TUN adapter does on connect/disconnect) without a password.
+// Delete this file to undo.
+polkit.addRule(function(action, subject) {{
+    var ids = ["org.freedesktop.resolve1.set-dns-servers", "org.freedesktop.resolve1.set-domains",
+               "org.freedesktop.resolve1.set-default-route", "org.freedesktop.resolve1.set-llmnr",
+               "org.freedesktop.resolve1.set-mdns", "org.freedesktop.resolve1.set-dnssec",
+               "org.freedesktop.resolve1.set-dns-over-tls", "org.freedesktop.resolve1.revert",
+               "org.freedesktop.resolve1.flush-caches", "org.freedesktop.resolve1.reset-server-features"];
+    if (ids.indexOf(action.id) >= 0 && subject.user == "{user}" && subject.local && subject.active) {{
+        return polkit.Result.YES;
+    }}
+}});
+"#
+    )
+}
+
+/// Nothing to ask: the capability is set and (with systemd-resolved) the polkit rule exists.
+pub fn tun_ready(exe: &Path) -> bool {
+    let user = std::env::var("USER").unwrap_or_default();
+    has_caps(exe) && !(resolved_active() && !user.is_empty() && user != "root" && !Path::new(POLKIT_RULE).exists())
+}
+
 /// Let `exe` (our copy of sing-box) create TUN interfaces without running Mosaic as
-/// root: one password prompt (polkit) that runs `setcap` on that file.
+/// root, and (with systemd-resolved) let the user change interface DNS without a password.
+/// One password prompt (polkit) for both; nothing happens if both are already in place.
 pub fn grant_tun(exe: &Path) -> Result<(), String> {
-    if has_caps(exe) {
+    let need_caps = !has_caps(exe);
+    let user = std::env::var("USER").unwrap_or_default();
+    let need_rule = resolved_active() && !user.is_empty() && user != "root" && !Path::new(POLKIT_RULE).exists();
+    if !need_caps && !need_rule {
         return Ok(());
     }
-    let setcap = which("setcap").ok_or("setcap not found: install libcap2-bin (Debian/Ubuntu) or libcap (Fedora/Arch)")?;
     let pkexec = which("pkexec").ok_or("pkexec not found: install polkit, or run once: sudo setcap cap_net_admin,cap_net_raw,cap_net_bind_service+ep <sing-box>")?;
+    let setcap = which("setcap");
+    if need_caps && setcap.is_none() {
+        return Err("setcap not found: install libcap2-bin (Debian/Ubuntu) or libcap (Fedora/Arch)".into());
+    }
+    let rule_tmp = std::env::temp_dir().join(format!("mosaic-polkit-{}.rules", std::process::id()));
+    if need_rule {
+        std::fs::write(&rule_tmp, polkit_rule_text(&user)).map_err(|e| e.to_string())?;
+    }
+    // One privileged shell: $1 setcap, $2 caps, $3 exe, $4 rule file ("" = skip), $5 target.
+    let script = r#"set -e
+if [ -n "$1" ]; then "$1" "$2" "$3"; fi
+if [ -n "$4" ]; then install -D -m 0644 "$4" "$5"; fi"#;
     let out = Command::new(pkexec)
-        .arg(&setcap)
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(script)
+        .arg("sh")
+        .arg(if need_caps { setcap.unwrap().into_os_string() } else { "".into() })
         .arg(CAPS)
         .arg(exe)
+        .arg(if need_rule { rule_tmp.clone().into_os_string() } else { "".into() })
+        .arg(POLKIT_RULE)
         .output()
-        .map_err(|e| format!("pkexec: {e}"))?;
-    if out.status.success() && has_caps(exe) {
-        Ok(())
-    } else if out.status.code() == Some(126) || out.status.code() == Some(127) {
-        Err("permission for TUN was not granted".into())
-    } else {
-        Err(format!("setcap failed: {}", String::from_utf8_lossy(&out.stderr).trim()))
+        .map_err(|e| format!("pkexec: {e}"));
+    let _ = std::fs::remove_file(&rule_tmp);
+    let out = out?;
+    if out.status.code() == Some(126) || out.status.code() == Some(127) {
+        return Err("permission for TUN was not granted".into());
     }
+    if need_caps && !has_caps(exe) {
+        return Err(format!("setcap failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(())
 }

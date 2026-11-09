@@ -3,16 +3,37 @@
 //! Windows: GetExtendedTcpTable / GetExtendedUdpTable give the owning PID of
 //! a local address:port, QueryFullProcessImageNameW gives its executable.
 //! Results are cached briefly; lookups only happen when a rule needs them.
+//!
+//! Android: the app layer answers through a hook (ConnectivityManager.
+//! getConnectionOwnerUid → package name), see `set_owner_hook`.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Proto {
     Tcp,
     Udp,
+}
+
+/// (protocol, local/app side, remote side) → owner name.
+pub type OwnerHook = Box<dyn Fn(Proto, SocketAddr, SocketAddr) -> Option<String> + Send + Sync>;
+static OWNER_HOOK: OnceLock<OwnerHook> = OnceLock::new();
+
+/// Install the platform's owner lookup (Android: package names). Set once.
+pub fn set_owner_hook(f: OwnerHook) {
+    let _ = OWNER_HOOK.set(f);
+}
+
+/// Owner of a flow captured by the TUN: `local` is the application side, `remote`
+/// its destination. Lower-case ("telegram.exe", "org.telegram.messenger").
+pub fn flow_owner(local: SocketAddr, remote: SocketAddr, proto: Proto) -> Option<String> {
+    if let Some(hook) = OWNER_HOOK.get() {
+        return hook(proto, local, remote).map(|s| s.to_ascii_lowercase());
+    }
+    process_of(local, proto)
 }
 
 static NAMES: Mutex<Option<HashMap<u32, (String, Instant)>>> = Mutex::new(None);

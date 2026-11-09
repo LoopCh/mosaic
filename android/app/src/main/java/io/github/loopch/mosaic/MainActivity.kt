@@ -7,7 +7,6 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.util.Base64
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.VpnService
@@ -31,6 +30,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
 /**
@@ -61,6 +61,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val loader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            // App icons for Settings → Apps: /appicon/<package>.png
+            .addPathHandler("/appicon/") { path -> appIcon(path.removeSuffix(".png")) }
             .build()
         web = WebView(this).apply {
             settings.javaScriptEnabled = true
@@ -198,22 +200,23 @@ class MainActivity : ComponentActivity() {
                 JSONObject()
                     .put("pkg", ai.packageName)
                     .put("name", ri.loadLabel(pm).toString())
-                    .put("icon", iconDataUrl(ri.loadIcon(pm)))
+                    .put("icon", "/appicon/${ai.packageName}.png")
             )
         }
         return out
     }
 
-    private fun iconDataUrl(d: android.graphics.drawable.Drawable): String = try {
-        val size = 48
+    /** A launcher icon as a small PNG, served to the WebView (loaded lazily by <img>). */
+    private fun appIcon(pkg: String): WebResourceResponse? = try {
+        val d = packageManager.getApplicationIcon(pkg)
+        val size = 72
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
         d.setBounds(0, 0, size, size)
-        d.draw(c)
+        d.draw(Canvas(bmp))
         val bytes = ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
-        "data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        WebResourceResponse("image/png", null, ByteArrayInputStream(bytes))
     } catch (e: Exception) {
-        ""
+        null
     }
 
     inner class Bridge {

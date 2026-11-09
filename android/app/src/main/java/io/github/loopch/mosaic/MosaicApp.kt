@@ -7,8 +7,14 @@ import android.util.Log
 import java.io.File
 
 class MosaicApp : Application() {
+    companion object {
+        @Volatile var instance: MosaicApp? = null
+            private set
+    }
+
     override fun onCreate() {
         super.onCreate()
+        instance = this
         val geo = File(filesDir, "geo")
         copyGeoFiles(geo)
         val err = Native.init(File(filesDir, "mosaic").absolutePath, applicationInfo.nativeLibraryDir, geo.absolutePath)

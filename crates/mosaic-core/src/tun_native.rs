@@ -157,8 +157,8 @@ mod stack {
     }
 
     /// Application name for a flow from `src` (journal + per-app rules).
-    fn flow_process(src: SocketAddr, proto: crate::procinfo::Proto, _routing: &SharedRouting) -> Option<String> {
-        crate::procinfo::process_of(src, proto)
+    fn flow_process(src: SocketAddr, dst: SocketAddr, proto: crate::procinfo::Proto, _routing: &SharedRouting) -> Option<String> {
+        crate::procinfo::flow_owner(src, dst, proto)
     }
 
     async fn handle_tcp<T>(
@@ -185,7 +185,7 @@ mod stack {
                 first = buf;
             }
         }
-        let process = flow_process(src, crate::procinfo::Proto::Tcp, &routing);
+        let process = flow_process(src, dst, crate::procinfo::Proto::Tcp, &routing);
         let r = current(&routing);
         let (mut up, conn) = hub::connect_target(&host, dst.port(), process.as_deref(), &r, &stats).await?;
         if !first.is_empty() {
@@ -210,7 +210,7 @@ mod stack {
             return serve_dns(&mut udp, &dns, &routing).await;
         }
         let Some(host) = target_host(dst.ip(), &dns) else { return Ok(()) };
-        let process = flow_process(src, crate::procinfo::Proto::Udp, &routing);
+        let process = flow_process(src, dst, crate::procinfo::Proto::Udp, &routing);
         crate::udp::relay_flow(udp, host, dst.port(), process, current(&routing), stats).await
     }
 

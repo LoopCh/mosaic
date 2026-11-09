@@ -12,9 +12,11 @@
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::{Arc, OnceLock};
 
-use jni::objects::{JClass, JString};
+use std::net::SocketAddr;
+
+use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jint, jstring};
-use jni::JNIEnv;
+use jni::{JNIEnv, JavaVM};
 use serde_json::{json, Value};
 
 use mosaic_core::Controller;
@@ -25,6 +27,48 @@ struct Core {
 }
 
 static CORE: OnceLock<Core> = OnceLock::new();
+
+/// For calls back into Kotlin from Rust threads (classes can only be looked up
+/// from a Java thread, so `Native` is resolved once in `init`).
+static JAVA: OnceLock<(JavaVM, GlobalRef)> = OnceLock::new();
+
+/// `Native.ownerOf(tcp, srcIp, srcPort, dstIp, dstPort)` → package name of the app that owns a flow.
+fn owner_of(tcp: bool, local: SocketAddr, remote: SocketAddr) -> Option<String> {
+    let (vm, class) = JAVA.get()?;
+    let mut env = vm.attach_current_thread_permanently().ok()?;
+    let res = env.with_local_frame(8, |env| -> Result<Option<String>, jni::errors::Error> {
+        let cls: &JClass = class.as_obj().into();
+        let src = env.new_string(local.ip().to_string())?;
+        let dst = env.new_string(remote.ip().to_string())?;
+        let v = env
+            .call_static_method(
+                cls,
+                "ownerOf",
+                "(ZLjava/lang/String;ILjava/lang/String;I)Ljava/lang/String;",
+                &[
+                    JValue::Bool(tcp as u8),
+                    JValue::Object(&src),
+                    JValue::Int(local.port() as i32),
+                    JValue::Object(&dst),
+                    JValue::Int(remote.port() as i32),
+                ],
+            )?
+            .l()?;
+        if v.is_null() {
+            return Ok(None);
+        }
+        let js = JString::from(v);
+        let name: String = env.get_string(&js)?.into();
+        Ok(Some(name))
+    });
+    match res {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = env.exception_clear();
+            None
+        }
+    }
+}
 
 fn text(env: &mut JNIEnv, s: &JString) -> String {
     env.get_string(s).map(|s| s.into()).unwrap_or_default()
@@ -45,6 +89,16 @@ pub extern "system" fn Java_io_github_loopch_mosaic_Native_init(
     assets_dir: JString,
 ) -> jstring {
     let (data, lib, assets) = (text(&mut env, &data_dir), text(&mut env, &lib_dir), text(&mut env, &assets_dir));
+    if JAVA.get().is_none() {
+        if let (Ok(vm), Ok(cls)) = (env.get_java_vm(), env.find_class("io/github/loopch/mosaic/Native")) {
+            if let Ok(global) = env.new_global_ref(JObject::from(cls)) {
+                let _ = JAVA.set((vm, global));
+                mosaic_core::procinfo::set_owner_hook(Box::new(|proto, local, remote| {
+                    owner_of(proto == mosaic_core::procinfo::Proto::Tcp, local, remote)
+                }));
+            }
+        }
+    }
     if CORE.get().is_none() {
         // Set before any thread of ours starts; engines inherit them.
         std::env::set_var("MOSAIC_HOME", &data);

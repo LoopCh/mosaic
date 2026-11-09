@@ -135,7 +135,8 @@ function rerenderAll() {
 
 // ------------------------------------------------------------------ app update
 function renderUpdateBanner() {
-  const u = snap && snap.app_update;
+  // Android: updates come as a new APK from the release page / store, not from inside the app.
+  const u = snap && !isAndroid() && snap.app_update;
   $('#update-banner').classList.toggle('hidden', !u);
   if (u) {
     $('#update-text').textContent = t('upd.available', u.version);
@@ -714,27 +715,27 @@ function renderAppsSummary() {
   const n = (snap.settings.apps || []).length;
   $('#set-apps-summary').textContent = n ? t('set.apps.count', n) : t('set.apps.none');
 }
-$('#btn-apps').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-  if (!appsCache) appsCache = await invoke('list_apps');
+$('#btn-apps').addEventListener('click', () => {
   const chosen = new Set(snap.settings.apps || []);
   const wrap = document.createElement('div');
   wrap.className = 'modal-wrap';
   wrap.innerHTML = `<div class="modal card picker" role="dialog" aria-modal="true">
     <div class="picker-head"><b>${esc(t('set.apps.list'))}</b><span class="muted small" id="pk-count"></span></div>
     <input id="pk-filter" placeholder="${esc(t('set.apps.search'))}" />
-    <div class="picker-list"></div>
+    <div class="picker-list"><div class="muted picker-msg">${esc(t('set.apps.loading'))}</div></div>
     <div class="modal-actions"><button class="btn ghost" data-a="0">${esc(t('dlg.cancel'))}</button><button class="btn primary" data-a="1">${esc(t('set.apps.done'))}</button></div>
   </div>`;
   const list = $('.picker-list', wrap);
   const count = () => { $('#pk-count', wrap).textContent = t('set.apps.count', chosen.size); };
   const draw = () => {
+    if (!appsCache) return;
     const f = $('#pk-filter', wrap).value.trim().toLowerCase();
     // Chosen apps first, then by name.
     const apps = appsCache
       .filter((a) => !f || a.name.toLowerCase().includes(f) || a.pkg.toLowerCase().includes(f))
       .sort((a, b) => (chosen.has(b.pkg) - chosen.has(a.pkg)) || a.name.localeCompare(b.name));
     list.innerHTML = apps.map((a) => `
-      <label class="app-item"><img src="${a.icon || ''}" alt="" /><span><span class="app-name">${esc(a.name)}</span><span class="muted small">${esc(a.pkg)}</span></span>
+      <label class="app-item"><img src="${esc(a.icon || '')}" alt="" loading="lazy" /><span><span class="app-name">${esc(a.name)}</span><span class="muted small">${esc(a.pkg)}</span></span>
       <input type="checkbox" data-pkg="${esc(a.pkg)}" ${chosen.has(a.pkg) ? 'checked' : ''} /></label>`).join('');
   };
   list.addEventListener('change', (ev) => {
@@ -759,8 +760,12 @@ $('#btn-apps').addEventListener('click', (e) => withBusy(e.currentTarget, async 
     } catch (err) { toast(err, 'error'); }
   });
   document.body.appendChild(wrap);
-  draw(); count();
-}));
+  count();
+  // Open first, then load the list (it can take a moment on phones with many apps).
+  (appsCache ? Promise.resolve(appsCache) : invoke('list_apps'))
+    .then((apps) => { appsCache = apps; if (!apps.length) list.innerHTML = `<div class="muted picker-msg">${esc(t('set.apps.empty'))}</div>`; else draw(); })
+    .catch((err) => { list.innerHTML = `<div class="picker-msg" style="color:var(--bad)">${esc(String(err))}</div>`; });
+});
 
 // ------------------------------------------------------------------ go
 document.addEventListener('keydown', (e) => {

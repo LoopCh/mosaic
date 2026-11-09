@@ -867,7 +867,8 @@ impl Controller {
             }
 
             // Mosaic updates: 30 s after start, then daily.
-            if settings.check_updates && (tick == 3 || tick % 8640 == 0) {
+            // Android: new versions come as an APK, not through the in-app installer.
+            if settings.check_updates && !cfg!(target_os = "android") && (tick == 3 || tick % 8640 == 0) {
                 self.check_app_update().await;
             }
 

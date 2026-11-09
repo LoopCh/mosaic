@@ -1,4 +1,4 @@
-# Mosaic 0.6
+# Mosaic 0.6.1
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -6,6 +6,15 @@ that only carry traffic to servers. Rules can send different traffic to nodes on
 different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
+
+## New in 0.6.1
+
+- Android: the app picker opens at once and loads icons lazily (served by the app, not passed through
+  the bridge) — it froze on phones with many apps.
+- Android: **rules by app** work in VPN mode — rule type “App (package)”, e.g. `org.telegram.messenger → node X`.
+  The owner of each connection comes from Android (`getConnectionOwnerUid`, Android 10+); the Connections
+  tab shows the package name.
+- Android: in-app update check and banner removed (new versions come as an APK).
 
 ## New in 0.6
 
@@ -39,7 +48,7 @@ Interface languages: English, Русский (automatic, switchable in Settings)
 - Engines are updated together with the app on Android (the system does not allow running downloaded files).
 - Desktop: “Restore bundled versions” is shown only when updated engines are installed.
 
-Not in this version yet: rules by app inside the VPN on Android, x86_64/armv7 builds, in-app APK updates
+Not in this version yet: x86_64/armv7 builds, in-app APK updates
 (the banner opens the release page).
 
 ### Android build
@@ -80,8 +89,8 @@ Keep `mosaic.jks` safe: an app signed with a lost key can never be updated.
 ### Releasing
 
 ```
-git tag v0.6.0
-git push origin v0.6.0
+git tag v0.6.1
+git push origin v0.6.1
 ```
 
 The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub

@@ -13,12 +13,12 @@ $headers = @{ 'User-Agent' = 'mosaic-setup' }
 if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
 
 function Get-LatestAsset([string]$repo, [string]$pattern) {
-    $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/latest"
+    $rel = Invoke-RestMethod -MaximumRetryCount 5 -RetryIntervalSec 5 -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/latest"
     $asset = $rel.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
     if (-not $asset) { throw "No asset matching '$pattern' in $repo $($rel.tag_name)" }
     Write-Host "  $repo $($rel.tag_name) -> $($asset.name)"
     $zip = Join-Path $tmp $asset.name
-    Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $zip
+    Invoke-WebRequest -MaximumRetryCount 5 -RetryIntervalSec 5 -Headers $headers -Uri $asset.browser_download_url -OutFile $zip
     return $zip
 }
 
@@ -42,7 +42,7 @@ Copy-Item $exe.FullName $dest -Force
 # Wintun: sing-box normally embeds it; keep a copy next to it just in case.
 try {
     $wz = Join-Path $tmp 'wintun.zip'
-    Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $wz
+    Invoke-WebRequest -MaximumRetryCount 5 -RetryIntervalSec 5 -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $wz
     $w = Join-Path $tmp 'wintun'
     Expand-Archive -Path $wz -DestinationPath $w -Force
     Copy-Item (Join-Path $w 'wintun\bin\amd64\wintun.dll') $dest -Force

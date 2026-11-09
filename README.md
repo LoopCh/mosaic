@@ -1,4 +1,4 @@
-# Mosaic 0.7.1
+# Mosaic 0.7.2
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -6,6 +6,13 @@ that only carry traffic to servers. Rules can send different traffic to nodes on
 different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
+
+## New in 0.7.2
+
+- Linux/Android: engines and the TUN adapter are stopped with SIGTERM first (SIGKILL after 3 s), so
+  sing-box removes its routes and `ip rule` entries (table 2022, priorities 9000–9010) on disconnect.
+- Note: DPI-bypass tools that rewrite outgoing packets (zapret, GoodbyeDPI…) can break connections to
+  proxy servers; exclude the node servers from them or turn them off while Mosaic is connected.
 
 ## New in 0.7.1
 
@@ -121,8 +128,8 @@ Keep `mosaic.jks` safe: an app signed with a lost key can never be updated.
 ### Releasing
 
 ```
-git tag v0.7.1
-git push origin v0.7.1
+git tag v0.7.2
+git push origin v0.7.2
 ```
 
 The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub

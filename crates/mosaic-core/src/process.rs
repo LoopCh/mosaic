@@ -66,6 +66,17 @@ impl EngineProcess {
     }
 
     pub async fn stop(mut self) {
+        // Unix: ask first. The sing-box TUN adapter removes its routes and `ip rule`
+        // entries only when it exits normally; SIGKILL leaves them behind.
+        #[cfg(unix)]
+        if let Some(pid) = self.pid {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
+            if tokio::time::timeout(Duration::from_secs(3), self.child.wait()).await.is_ok() {
+                return;
+            }
+        }
         let _ = self.child.kill().await;
     }
 

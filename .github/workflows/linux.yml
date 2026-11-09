@@ -24,7 +24,7 @@ jobs:
       - name: System libraries (WebKitGTK, tray, AppImage)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev file rpm
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev file rpm libfuse2
 
       - name: Unit tests (core)
         run: cargo test -p mosaic-core --features native-tun
@@ -34,16 +34,27 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash ./scripts/get-engines-linux.sh
 
-      - name: Build packages (deb, rpm, AppImage)
+      - name: Build packages (deb, rpm)
         working-directory: app/src-tauri
-        run: npx --yes @tauri-apps/cli@2 build --bundles deb,rpm,appimage
+        run: npx --yes @tauri-apps/cli@2 build --bundles deb,rpm
+
+      # Separate step: if AppImage packaging fails, the deb/rpm are still published.
+      - name: Build AppImage
+        id: appimage
+        continue-on-error: true
+        working-directory: app/src-tauri
+        env:
+          # linuxdeploy's bundled strip cannot handle newer binaries; FUSE is not needed in CI.
+          NO_STRIP: "true"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: npx --yes @tauri-apps/cli@2 build --bundles appimage --verbose
 
       - name: Collect
         run: |
           mkdir -p out
           cp target/release/bundle/deb/*.deb out/
           cp target/release/bundle/rpm/*.rpm out/
-          cp target/release/bundle/appimage/*.AppImage out/
+          cp target/release/bundle/appimage/*.AppImage out/ 2>/dev/null || echo "::warning::AppImage was not built (see the 'Build AppImage' step)"
           ls -la out
 
       - uses: actions/upload-artifact@v4

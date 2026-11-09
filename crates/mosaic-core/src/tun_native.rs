@@ -475,7 +475,10 @@ mod fdtun {
             if flags < 0 || unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
                 return Err(io::Error::last_os_error());
             }
-            Ok(Self { fd: AsyncFd::new(owned)? })
+            // `new` is deprecated in recent tokio; the descriptor is owned (OwnedFd), so it is sound here.
+            #[allow(deprecated)]
+            let fd = AsyncFd::new(owned)?;
+            Ok(Self { fd })
         }
     }
 

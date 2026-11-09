@@ -32,9 +32,12 @@ impl EngineProcess {
 
     pub async fn spawn(kind: EngineKind, role: &'static str, exe: &Path, config: &Path, logs: Arc<LogBuf>) -> Result<Self, String> {
         let mut cmd = Command::new(exe);
-        cmd.arg("run")
-            .arg("-c")
-            .arg(config)
+        cmd.arg("run").arg("-c").arg(config);
+        if kind == EngineKind::Singbox {
+            // Plain log lines (no ANSI colour codes) for the Logs screen.
+            cmd.arg("--disable-color");
+        }
+        cmd
             .current_dir(exe.parent().unwrap_or_else(|| Path::new(".")))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

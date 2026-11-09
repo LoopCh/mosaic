@@ -135,6 +135,7 @@ function rerenderAll() {
 }
 
 // ------------------------------------------------------------------ app update
+let appUpdating = false;
 function renderUpdateBanner() {
   // Android: updates come as a new APK from the release page / store, not from inside the app.
   const u = snap && !isAndroid() && snap.app_update;
@@ -143,14 +144,22 @@ function renderUpdateBanner() {
     $('#update-text').textContent = t('upd.available', u.version);
     $('#update-text').title = u.notes || '';
     // No installer for this platform (Android): open the release page instead.
-    $('#update-install').textContent = u.installer ? t('upd.install') : t('upd.open');
+    $('#update-install').textContent = appUpdating ? t('upd.downloading') : u.installer ? t('upd.install') : t('upd.open');
   }
 }
-$('#update-install').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+// Note: event.currentTarget is null once the handler has awaited, so the button is kept here.
+const updateBtn = $('#update-install');
+updateBtn.addEventListener('click', () => withBusy(updateBtn, async () => {
   if (!snap.app_update.installer) { await invoke('open_url', { url: snap.app_update.page }); return; }
   if (!(await ask(t('upd.confirm', snap.app_update.version), t('upd.install')))) return;
-  e.currentTarget.textContent = t('upd.downloading');
-  await invoke('install_app_update');
+  appUpdating = true;
+  updateBtn.textContent = t('upd.downloading');
+  try {
+    await invoke('install_app_update');
+  } finally {
+    appUpdating = false;
+    renderUpdateBanner();
+  }
 }));
 
 // ------------------------------------------------------------------ polling

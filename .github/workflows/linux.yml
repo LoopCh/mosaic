@@ -38,6 +38,24 @@ jobs:
         working-directory: app/src-tauri
         run: npx --yes @tauri-apps/cli@2 build --bundles deb,rpm
 
+      # The bundler downloads its AppImage tools from GitHub on every run and gives up on the
+      # first error (504s happen). Fetch them with retries and keep them cached; the bundler
+      # uses files already present in ~/.cache/tauri.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/tauri
+          key: tauri-appimage-tools-v1
+
+      - name: AppImage tools
+        continue-on-error: true
+        run: |
+          d="$HOME/.cache/tauri"; mkdir -p "$d"
+          get() { [ -s "$d/$2" ] || curl -fsSL --retry 8 --retry-delay 10 --retry-all-errors -o "$d/$2" "$1"; chmod +x "$d/$2"; }
+          get https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64 AppRun-x86_64
+          get https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy-07333c6/linuxdeploy-x86_64.AppImage linuxdeploy-x86_64.AppImage
+          get https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage linuxdeploy-plugin-appimage-x86_64.AppImage
+          ls -la "$d"
+
       # Separate step: if AppImage packaging fails, the deb/rpm are still published.
       - name: Build AppImage
         id: appimage

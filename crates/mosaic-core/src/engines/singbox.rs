@@ -30,7 +30,7 @@ pub fn compile(slots: &[Slot]) -> Result<Value, String> {
     }
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
     let mut cfg = json!({
-        "log": { "level": "warn", "timestamp": false, "disable_color": true },
+        "log": { "level": "warn", "timestamp": false },
         "dns": { "servers": [{ "type": "local", "tag": "local" }] },
         "inbounds": inbounds,
         "outbounds": outbounds,
@@ -254,7 +254,7 @@ pub fn compile_tun(
         tun["route_exclude_address"] = json!(cidrs);
     }
     json!({
-        "log": { "level": "warn", "timestamp": false, "disable_color": true },
+        "log": { "level": "warn", "timestamp": false },
         "dns": {
             "servers": [
                 { "type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18" },

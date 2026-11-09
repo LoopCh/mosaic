@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mosaic-core", "crates/mosaic-cli", "crates/mosaic-android", "app/src-tauri"]
+members = ["crates/mosaic-core", "crates/mosaic-cli", "crates/mosaic-android", "crates/mosaic-tun-helper", "app/src-tauri"]
 
 [profile.release]
 opt-level = 3

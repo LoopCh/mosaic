@@ -175,6 +175,23 @@ pub fn install_bundled(dest: &Path) -> Vec<String> {
 /// file alone. (A process started from a file with capabilities becomes "non-dumpable",
 /// so the adapter could no longer see which program owns its sockets — that broke
 /// loop prevention for the sing-box engine when both shared one file.)
+/// Copy `src` to `dst` (executable) unless an identical-looking copy is there already.
+/// A fresh copy has no capabilities: they are granted again on the next TUN connect.
+pub fn copy_if_changed(src: &Path, dst: &Path) -> Result<PathBuf, String> {
+    let src_meta = std::fs::metadata(src).map_err(|e| format!("{}: {e}", src.display()))?;
+    let same = std::fs::metadata(dst).map(|d| d.len() == src_meta.len() && d.modified().ok() >= src_meta.modified().ok()).unwrap_or(false);
+    if !same {
+        let dir = dst.parent().ok_or("bad path")?;
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let tmp = dir.join(format!(".{}.tmp", dst.file_name().unwrap_or_default().to_string_lossy()));
+        std::fs::copy(src, &tmp).map_err(|e| e.to_string())?;
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+        std::fs::rename(&tmp, dst).map_err(|e| e.to_string())?;
+    }
+    Ok(dst.to_path_buf())
+}
+
 pub fn tun_binary(engine: &Path, dir: &Path) -> Result<PathBuf, String> {
     let dst = dir.join("sing-box-tun");
     let src_meta = std::fs::metadata(engine).map_err(|e| format!("{}: {e}", engine.display()))?;

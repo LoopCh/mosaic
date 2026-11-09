@@ -1,6 +1,7 @@
 //! Outbound sockets for "direct" traffic. While the native TUN is up, the
 //! default route points into the tunnel, so the hub's own sockets are pinned
-//! to the physical interface (IP_UNICAST_IF on Windows) to avoid a loop.
+//! to the physical interface (IP_UNICAST_IF on Windows, SO_BINDTODEVICE on
+//! Linux — allowed without privileges since Linux 5.7) to avoid a loop.
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -20,6 +21,31 @@ pub fn set_bypass_interface(ifindex: u32) {
 
 pub fn bypass_interface() -> u32 {
     BYPASS_IFINDEX.load(Ordering::SeqCst)
+}
+
+/// Linux: name of the physical interface for SO_BINDTODEVICE ("" = none).
+#[cfg(target_os = "linux")]
+static BYPASS_DEVICE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+#[cfg(target_os = "linux")]
+pub fn set_bypass_device(name: &str) {
+    *BYPASS_DEVICE.lock().unwrap() = name.to_string();
+}
+
+#[cfg(target_os = "linux")]
+fn bind_device(fd: std::os::fd::RawFd) -> io::Result<()> {
+    let name = BYPASS_DEVICE.lock().unwrap().clone();
+    if name.is_empty() {
+        return Ok(());
+    }
+    let rc = unsafe {
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_BINDTODEVICE, name.as_ptr() as *const libc::c_void, name.len() as libc::socklen_t)
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[cfg(windows)]
@@ -63,6 +89,11 @@ fn pin_tcp(_s: &TcpSocket, _v6: bool) -> io::Result<()> {
         use std::os::windows::io::AsRawSocket;
         pin::apply(_s.as_raw_socket(), _v6, idx)?;
     }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        bind_device(_s.as_raw_fd())?;
+    }
     Ok(())
 }
 
@@ -82,6 +113,11 @@ pub fn udp_socket(v6: bool) -> io::Result<UdpSocket> {
         {
             use std::os::windows::io::AsRawSocket;
             pin::apply(std_sock.as_raw_socket(), v6, idx)?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            bind_device(std_sock.as_raw_fd())?;
         }
     }
     std_sock.set_nonblocking(true)?;

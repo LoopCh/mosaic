@@ -28,6 +28,8 @@ pub struct NativeParams {
     pub resolver: Arc<Resolver>,
     /// A TUN file descriptor prepared by the OS (Android VpnService). Unused on Windows.
     pub fd: Option<i32>,
+    /// Linux: Mosaic's helper binary that creates and configures the interface.
+    pub helper: Option<std::path::PathBuf>,
     pub routing: SharedRouting,
     pub stats: Arc<Stats>,
     pub logs: Arc<LogBuf>,
@@ -45,6 +47,8 @@ pub struct NativeTun {
     task: tokio::task::JoinHandle<()>,
     #[cfg(unix)]
     logs: Arc<LogBuf>,
+    #[cfg(target_os = "linux")]
+    helper: Option<linux_side::Helper>,
 }
 
 impl NativeTun {
@@ -56,14 +60,28 @@ impl NativeTun {
         }
         #[cfg(unix)]
         {
-            let fd = p.fd.ok_or(
-                "the native TUN stack needs a TUN interface prepared by the system (Android VpnService); use the sing-box TUN stack here",
-            )?;
+            // Linux: the helper creates the interface and we attach to it.
+            #[cfg(target_os = "linux")]
+            let (fd, helper) = match p.fd {
+                Some(fd) => (Some(fd), None),
+                None => {
+                    let (fd, h) = linux_side::start(&p).await?;
+                    (Some(fd), Some(h))
+                }
+            };
+            #[cfg(not(target_os = "linux"))]
+            let fd = p.fd;
+            let fd = fd.ok_or("the native TUN stack needs a TUN interface prepared by the system (Android VpnService)")?;
             let dev = fdtun::FdDev::new(fd).map_err(|e| format!("TUN descriptor: {e}"))?;
             let logs = p.logs.clone();
             let task = stack::spawn(dev, p.routing, p.stats, HashMap::new(), p.logs);
-            logs.push("[tun] native TUN is up (VPN interface)");
-            Ok(NativeTun { task, logs })
+            logs.push("[tun] native TUN is up");
+            Ok(NativeTun {
+                task,
+                logs,
+                #[cfg(target_os = "linux")]
+                helper,
+            })
         }
         #[cfg(not(any(windows, unix)))]
         {
@@ -77,9 +95,14 @@ impl NativeTun {
         self.inner.stop().await;
         #[cfg(unix)]
         {
-            // Dropping the stack closes the descriptor, which tears the VPN interface down.
+            // Dropping the stack closes the descriptor, which tears the VPN interface down
+            // (Android); on Linux the helper removes the interface and its routes.
             self.task.abort();
             let _ = self.task.await;
+            #[cfg(target_os = "linux")]
+            if let Some(h) = self.helper {
+                h.stop().await;
+            }
             self.logs.push("[tun] native TUN stopped");
         }
     }
@@ -531,6 +554,105 @@ mod win {
             }
             // Routes on the TUN interface disappear with the adapter.
             self.logs.push("[tun] native TUN stopped");
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Linux: helper side
+
+#[cfg(target_os = "linux")]
+mod linux_side {
+    use super::*;
+    use crate::linux_tun::{self, HELPER_ARG, TUN_NAME};
+    use std::os::fd::IntoRawFd;
+    use std::process::Stdio;
+    use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+    use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+
+    pub struct Helper {
+        child: Child,
+        stdin: Option<ChildStdin>,
+    }
+
+    impl Helper {
+        pub async fn stop(mut self) {
+            crate::net::set_bypass_interface(0);
+            crate::net::set_bypass_device("");
+            drop(self.stdin.take()); // the helper cleans up when its stdin closes
+            if tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await.is_err() {
+                let _ = self.child.kill().await;
+            }
+        }
+    }
+
+    async fn expect(lines: &mut Lines<BufReader<ChildStdout>>, want: &str, logs: &LogBuf) -> Result<(), String> {
+        loop {
+            let line = tokio::time::timeout(Duration::from_secs(10), lines.next_line())
+                .await
+                .map_err(|_| format!("the TUN helper did not answer ({want})"))?
+                .map_err(|e| e.to_string())?
+                .ok_or("the TUN helper exited")?;
+            if line == want {
+                return Ok(());
+            }
+            if let Some(e) = line.strip_prefix("error: ") {
+                return Err(format!("TUN: {e}"));
+            }
+            logs.push(format!("[tun] {line}"));
+        }
+    }
+
+    pub async fn start(p: &NativeParams) -> Result<(i32, Helper), String> {
+        let exe = p.helper.clone().ok_or("TUN helper missing")?;
+        let (phys, gw) = linux_tun::physical_default_route().ok_or("no IPv4 default route (is the network connected?)")?;
+        let bypass: Vec<String> = p.server_ips.iter().filter(|ip| ip.is_ipv4()).map(|ip| ip.to_string()).collect();
+        let dns: Vec<String> = linux_tun::resolv_nameservers().iter().map(|ip| ip.to_string()).filter(|ip| !bypass.contains(ip)).collect();
+        let uid = unsafe { libc::getuid() }.to_string();
+        let join = |v: &[String]| if v.is_empty() { "-".to_string() } else { v.join(",") };
+        p.logs.push(format!("[tun] physical interface {phys} (gateway {})", gw.map(|g| g.to_string()).unwrap_or_else(|| "-".into())));
+        let mut child = Command::new(&exe)
+            .arg(HELPER_ARG)
+            .arg(&uid)
+            .arg(&phys)
+            .arg(gw.map(|g| g.to_string()).unwrap_or_else(|| "-".into()))
+            .arg(join(&bypass))
+            .arg(join(&dns))
+            .arg("1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("cannot start the TUN helper: {e}"))?;
+        let mut stdin = child.stdin.take().ok_or("helper stdin")?;
+        let mut lines = BufReader::new(child.stdout.take().ok_or("helper stdout")?).lines();
+        let res: Result<i32, String> = async {
+            expect(&mut lines, "created", &p.logs).await?;
+            let fd = linux_tun::open_tun(TUN_NAME).map_err(|e| format!("cannot attach to the TUN interface: {e}"))?;
+            stdin.write_all(b"go\n").await.map_err(|e| e.to_string())?;
+            expect(&mut lines, "ready", &p.logs).await?;
+            Ok(fd.into_raw_fd())
+        }
+        .await;
+        match res {
+            Ok(fd) => {
+                // Later helper messages (warnings) go to the log.
+                let logs = p.logs.clone();
+                tokio::spawn(async move {
+                    while let Ok(Some(l)) = lines.next_line().await {
+                        logs.push(format!("[tun] {l}"));
+                    }
+                });
+                crate::net::set_bypass_device(&phys);
+                crate::net::set_bypass_interface(linux_tun::ifindex(&phys).unwrap_or(1));
+                p.logs.push(format!("[tun] interface '{TUN_NAME}' is up ({} bypass routes)", bypass.len()));
+                Ok((fd, Helper { child, stdin: Some(stdin) }))
+            }
+            Err(e) => {
+                drop(stdin);
+                let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+                Err(e)
+            }
         }
     }
 }

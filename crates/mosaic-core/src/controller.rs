@@ -126,6 +126,8 @@ struct Session {
     engines: Vec<EngineProcess>,
     /// sing-box TUN adapter.
     front: Option<EngineProcess>,
+    /// Per-app rules the running adapter was built with (rebuild only when they change).
+    front_apps: Vec<(Vec<String>, singbox::FrontTarget)>,
     #[cfg(feature = "native-tun")]
     native: Option<crate::tun_native::NativeTun>,
     upstreams: HashMap<String, Upstream>,
@@ -241,6 +243,51 @@ fn server_domains(nodes: &[Node]) -> Vec<String> {
 }
 
 /// Address of the interface used for the default route (no packets are sent).
+/// Windows: a Name Resolution Policy (NRPT) rule sending *all* names (".") to some DNS
+/// server overrides the DNS of every interface, the TUN's included. Tailscale ("Use Tailscale
+/// DNS settings", 100.100.100.100) and corporate VPNs set such rules. Mosaic must not override
+/// or allow it (that server forwards outside the tunnel), so it explains instead.
+#[cfg(windows)]
+fn nrpt_override() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    let out = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-DnsClientNrptPolicy | ForEach-Object { \"$($_.Namespace)|$($_.NameServers -join ',')\" }",
+        ])
+        .creation_flags(0x0800_0000)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    nrpt_hint(&text)
+}
+
+/// Lines "namespace|server,server" → explanation if all names are redirected.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn nrpt_hint(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let Some((ns, servers)) = line.trim().split_once('|') else { continue };
+        if ns.trim() != "." || servers.trim().is_empty() {
+            continue;
+        }
+        let servers = servers.trim();
+        let who = if servers.contains("100.100.100.100") {
+            "Tailscale (“Use Tailscale DNS settings”). Turn it off while using Mosaic TUN: Tailscale menu → \
+             Preferences → uncheck “Use Tailscale DNS settings”, or run `tailscale set --accept-dns=false`."
+                .to_string()
+        } else {
+            "another VPN or a corporate policy. Turn off its DNS setting or disconnect it while using Mosaic TUN.".to_string()
+        };
+        return Some(format!(
+            "Windows sends all DNS queries to {servers} by a name resolution policy (NRPT) rule, bypassing \
+             Mosaic's tunnel — that DNS would leak. The rule comes from {who}"
+        ));
+    }
+    None
+}
+
 /// `n` with its server replaced by `ip`; the name stays in SNI / Host where it was implied.
 fn pin_node(mut n: Node, ip: String) -> Node {
     let name = std::mem::replace(&mut n.server, ip);
@@ -512,8 +559,8 @@ impl Controller {
             engines: engine_infos,
             is_admin: self.admin,
             data_dir: self.dir.display().to_string(),
-            // The native stack needs wintun (Windows) or a VpnService descriptor (Android).
-            native_tun_available: cfg!(feature = "native-tun") && cfg!(any(windows, target_os = "android")),
+            // The native stack: wintun (Windows), a VpnService descriptor (Android), mosaic-tun-helper (Linux).
+            native_tun_available: cfg!(feature = "native-tun") && cfg!(any(windows, target_os = "android", target_os = "linux")),
             app_update: self.app_update.lock().unwrap().clone(),
             lan_ip: if st.settings.allow_lan { lan_ip() } else { None },
             geoip_file,
@@ -697,13 +744,21 @@ impl Controller {
             s.geo = geo;
             s.hub.update(routing_for(&inner.state, s));
             self.logs.push("[hub] rules applied");
-            // The sing-box adapter carries the per-app rules: rebuild it.
-            if let (Some(old), Some(dp)) = (s.front.take(), s.direct_port) {
-                old.stop().await;
-                let apps = app_rules(&inner.state, s);
-                match self.start_front(s.hub.port, dp, &s.server_domains, &s.server_ips, &inner.state.settings, &apps).await {
-                    Ok(p) => s.front = Some(p),
-                    Err(e) => self.logs.push(format!("[hub] TUN adapter restart failed: {e}")),
+            // The sing-box adapter carries the per-app rules. Everything else lives in the hub and
+            // was just swapped in without dropping connections; the adapter (and with it the
+            // whole tunnel) is restarted only when the per-app rules themselves changed.
+            let apps = app_rules(&inner.state, s);
+            if s.front.is_some() && apps != s.front_apps {
+                if let (Some(old), Some(dp)) = (s.front.take(), s.direct_port) {
+                    self.logs.push("[hub] rules by application changed — restarting the TUN adapter");
+                    old.stop().await;
+                    match self.start_front(s.hub.port, dp, &s.server_domains, &s.server_ips, &inner.state.settings, &apps).await {
+                        Ok(p) => {
+                            s.front = Some(p);
+                            s.front_apps = apps;
+                        }
+                        Err(e) => self.logs.push(format!("[hub] TUN adapter restart failed: {e}")),
+                    }
                 }
             }
         }
@@ -1165,10 +1220,14 @@ impl Controller {
         let tun = settings.mode == Mode::Tun;
         #[cfg(target_os = "linux")]
         if tun {
-            // Linux: the sing-box TUN adapter, allowed to create the interface by a file capability.
-            settings.tun_stack = TunStack::Singbox;
-            let engine = engines::find(EngineKind::Singbox).ok_or("TUN mode needs sing-box in the engines folder")?;
-            let exe = crate::linux::tun_binary(&engine, &engines::bundled_copy_dir())?;
+            // Linux, both stacks: the program that creates the interface gets a file capability
+            // (one password prompt) — the sing-box adapter copy, or Mosaic's own TUN helper.
+            let exe = if settings.tun_stack == TunStack::Native {
+                crate::linux_tun::helper_binary(&engines::bundled_copy_dir())?
+            } else {
+                let engine = engines::find(EngineKind::Singbox).ok_or("TUN mode needs sing-box in the engines folder")?;
+                crate::linux::tun_binary(&engine, &engines::bundled_copy_dir())?
+            };
             if !sys::is_admin() && !crate::linux::tun_ready(&exe) {
                 self.logs.push("[hub] asking for permission to create the TUN interface (one-time)…");
                 tokio::task::spawn_blocking(move || crate::linux::grant_tun(&exe))
@@ -1231,6 +1290,7 @@ impl Controller {
             },
             engines: engine_procs,
             front: None,
+            front_apps: Vec::new(),
             #[cfg(feature = "native-tun")]
             native: None,
             upstreams,
@@ -1287,6 +1347,7 @@ impl Controller {
                 match self.start_front(s.hub.port, dp, &s.server_domains, &s.server_ips, &settings, &apps).await {
                     Ok(p) => {
                         s.front = Some(p);
+                        s.front_apps = apps;
                         Ok(())
                     }
                     Err(e) => Err(e),
@@ -1367,6 +1428,9 @@ impl Controller {
             tokio::time::sleep(Duration::from_millis(700)).await;
         }
         self.log_dns_setup();
+        if let Some(hint) = nrpt_override() {
+            return Err(format!("DNS check failed: {hint}"));
+        }
         Err(format!("DNS check failed: names cannot be resolved in TUN mode ({last})."))
     }
 
@@ -1376,7 +1440,8 @@ impl Controller {
         use std::os::windows::process::CommandExt;
         let script = "Get-NetIPInterface -AddressFamily IPv4 | Sort-Object InterfaceMetric | Select-Object -First 6 InterfaceAlias,InterfaceMetric,ConnectionState | Format-Table -AutoSize | Out-String -Width 200; \
                       Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses } | Format-Table InterfaceAlias,ServerAddresses -AutoSize | Out-String -Width 200; \
-                      Get-NetRoute -AddressFamily IPv4 -DestinationPrefix 0.0.0.0/0 | Format-Table InterfaceAlias,NextHop,RouteMetric -AutoSize | Out-String -Width 200";
+                      Get-NetRoute -AddressFamily IPv4 -DestinationPrefix 0.0.0.0/0 | Format-Table InterfaceAlias,NextHop,RouteMetric -AutoSize | Out-String -Width 200; \
+                      Get-DnsClientNrptPolicy | Format-Table Namespace,NameServers -AutoSize | Out-String -Width 200";
         if let Ok(out) = std::process::Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .creation_flags(0x0800_0000)
@@ -1397,9 +1462,21 @@ impl Controller {
     async fn start_native(&self, s: &mut Session, nodes: &[Node]) -> Result<(), String> {
         let params = crate::tun_native::NativeParams {
             server_domains: server_domains(nodes),
-            server_ips: nodes.iter().filter_map(|n| n.server.parse().ok()).collect(),
+            // Linux: the engines got their servers as IPs (pinned); the direct DNS server is not
+            // bypassed — the hub's own sockets are bound to the physical interface anyway, and
+            // apps must not reach it around the tunnel.
+            server_ips: if cfg!(target_os = "linux") {
+                let dns = s.resolver.server().map(|a| a.ip());
+                s.server_ips.iter().copied().filter(|ip| Some(*ip) != dns).collect()
+            } else {
+                nodes.iter().filter_map(|n| n.server.parse().ok()).collect()
+            },
             resolver: s.resolver.clone(),
             fd: self.tun_fd.lock().unwrap().take(),
+            #[cfg(target_os = "linux")]
+            helper: Some(crate::linux_tun::helper_binary(&engines::bundled_copy_dir())?),
+            #[cfg(not(target_os = "linux"))]
+            helper: None,
             routing: s.hub.shared(),
             stats: self.stats.clone(),
             logs: self.logs.clone(),

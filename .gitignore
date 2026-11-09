@@ -12,3 +12,5 @@ android/local.properties
 android/app/src/main/jniLibs/
 android/app/src/main/assets/geo/
 out/
+
+app/src-tauri/binaries/

@@ -1,4 +1,4 @@
-# Mosaic 0.7.5
+# Mosaic 0.8
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -7,12 +7,37 @@ different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
 
+## New in 0.8 — native TUN on Linux
+
+- **Mosaic's own TUN stack on Linux** (Settings → TUN → “Mosaic TUN”), the same stack as on Windows and
+  Android: no extra sing-box process, every rule (rules by application too) applies instantly, and
+  firewalls (ufw, firewalld) do not interfere.
+- How it works without root: a tiny helper, `mosaic-tun-helper` (shipped next to Mosaic), runs from a copy
+  with `cap_net_admin` (granted with the usual one-time password prompt). It creates a TUN interface owned
+  by you, sets the routes (0/1 + 128/1 into the tunnel, node servers around it, the system's DNS servers
+  into it) and the interface DNS in systemd-resolved (`~.`), and removes everything when Mosaic disconnects,
+  quits or crashes. Mosaic attaches to the interface without any privileges.
+- Mosaic's own direct connections are bound to the physical interface (`SO_BINDTODEVICE`, Linux 5.7+), so
+  they never loop into the tunnel; engines reach their servers by bypass routes.
+- The sing-box adapter stays available as the alternative stack.
+- Building locally: `cargo build --release -p mosaic-tun-helper`, then copy it to
+  `app/src-tauri/binaries/mosaic-tun-helper-x86_64-unknown-linux-gnu` before `tauri build` (CI does this).
+
+## New in 0.7.6
+
+- Applying rules in TUN mode (sing-box adapter: Linux, and Windows with that stack) no longer restarts the
+  tunnel: rules are swapped in the hub without dropping connections; the adapter is rebuilt only when the
+  rules *by application* change.
+
 ## New in 0.7.5
 
 - Windows DNS leak protection is **fail-closed**: if the filters cannot be installed, or a live check
   shows that the system DNS does not go through the tunnel (a never-seen name must resolve to a fake IP
   198.18.x.x), Mosaic does not connect and says why — instead of running with a DNS leak or no DNS.
   DNS to the TUN's own DNS address (172.19.0.2) is always allowed in addition to the TUN adapter.
+- Windows TUN adds a default route on the tunnel and flushes the DNS cache, so the system DNS uses the
+  tunnel's DNS server. If a name resolution policy (NRPT) sends all DNS elsewhere — Tailscale's
+  “Use Tailscale DNS settings”, corporate VPNs — Mosaic names the cause instead of connecting with a leak.
 - sing-box TUN adapter: if IPv6 is turned off in the system ("set ipv6 address: Element not found"),
   it is restarted with IPv4 only instead of failing.
 - Native TUN (Windows, Android) logs what it sees every 5 s while traffic changes: packets in/out,
@@ -156,8 +181,8 @@ Keep `mosaic.jks` safe: an app signed with a lost key can never be updated.
 ### Releasing
 
 ```
-git tag v0.7.5
-git push origin v0.7.5
+git tag v0.8.0
+git push origin v0.8.0
 ```
 
 The `release` workflow builds the installer, the portable zip and `SHA256SUMS`, and publishes a GitHub

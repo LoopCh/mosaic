@@ -55,6 +55,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash ./scripts/get-engines-linux.sh
 
+      # Shipped next to Mosaic (/usr/bin): creates the interface for the native TUN stack.
+      - name: TUN helper
+        run: |
+          cargo build --release -p mosaic-tun-helper
+          mkdir -p app/src-tauri/binaries
+          cp target/release/mosaic-tun-helper app/src-tauri/binaries/mosaic-tun-helper-x86_64-unknown-linux-gnu
+
       - name: Build packages (deb, rpm)
         working-directory: app/src-tauri
         run: npx --yes @tauri-apps/cli@2 build --bundles deb,rpm

@@ -21,6 +21,8 @@ pub mod geo;
 pub mod hub;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "linux")]
+pub mod linux_tun;
 pub mod links;
 pub mod model;
 pub mod net;

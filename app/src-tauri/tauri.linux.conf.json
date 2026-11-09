@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/mosaic-tun-helper"]
+  }
+}

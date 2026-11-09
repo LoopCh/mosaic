@@ -36,7 +36,7 @@ jobs:
       - name: Download engines and geo files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./scripts/get-engines-android.sh
+        run: bash ./scripts/get-engines-android.sh
 
       - uses: gradle/actions/setup-gradle@v4
         with:

@@ -31,7 +31,7 @@ and attaches it to releases. Locally: Rust + `cargo install cargo-ndk`, Android 
 
 ```
 cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build --release -p mosaic-android
-./scripts/get-engines-android.sh
+bash ./scripts/get-engines-android.sh
 cd android && gradle assembleRelease
 ```
 

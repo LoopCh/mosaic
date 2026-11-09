@@ -474,6 +474,15 @@ pub struct Subscription {
     pub url: String,
     #[serde(default)]
     pub name: String,
+    /// From the provider's `subscription-userinfo` header (bytes; expire = unix seconds).
+    #[serde(default)]
+    pub upload: Option<u64>,
+    #[serde(default)]
+    pub download: Option<u64>,
+    #[serde(default)]
+    pub total: Option<u64>,
+    #[serde(default)]
+    pub expire: Option<u64>,
     #[serde(default)]
     pub updated_ms: u64,
     #[serde(default)]

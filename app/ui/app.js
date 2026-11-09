@@ -38,6 +38,8 @@ function applyI18n() {
   document.documentElement.lang = lang;
   $$('[data-i18n]').forEach((el) => { el.textContent = t((isAndroid() && el.dataset.i18nAndroid) || el.dataset.i18n); });
   $$('[data-i18n-ph]').forEach((el) => { el.placeholder = t(el.dataset.i18nPh); });
+  $$('[data-i18n-title]').forEach((el) => { el.title = t(el.dataset.i18nTitle); });
+  try { fillConnSort(); } catch { /* connections code not initialised yet */ }
 }
 
 const UNITS = { en: ['B', 'KB', 'MB', 'GB', 'TB'], ru: ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'] };
@@ -332,9 +334,80 @@ function latTip(n) {
   return l.rtt != null ? t('lat.tip', l.rtt, l.ms) : t('lat.tipConn', l.ms);
 }
 
+// Collapsed node groups (subscription URL or "manual"), remembered per browser.
+const collapsed = new Set((() => { try { return JSON.parse(localStorage.getItem('mosaic.collapsed') || '[]'); } catch { return []; } })());
+function saveCollapsed() { try { localStorage.setItem('mosaic.collapsed', JSON.stringify([...collapsed])); } catch {} }
+let nodeSort = (() => { try { return localStorage.getItem('mosaic.nodeSort') || 'order'; } catch { return 'order'; } })();
+
+function latencyKey(n) {
+  const l = n.latency;
+  if (!l) return 1e9;            // not tested: after tested ones
+  if (l.ms == null) return 2e9;  // failed: last
+  return l.rtt ?? l.ms;
+}
+
+// Subscription header: title, traffic used / left, expiry, last update, actions.
+function subHeader(s, count, open) {
+  const locale = lang === 'ru' ? 'ru-RU' : undefined;
+  const used = (s.upload || 0) + (s.download || 0);
+  let traffic = '';
+  if (s.total) {
+    const pct = Math.min(100, Math.round((used / s.total) * 100));
+    const cls = pct >= 90 ? 'bad' : pct >= 75 ? 'mid' : 'good';
+    traffic = `<div class="sub-traffic"><div class="bar ${cls}"><span style="width:${pct}%"></span></div>
+      <span class="small">${t('subs.used', fmtBytes(used), fmtBytes(s.total))} · ${t('subs.left', fmtBytes(Math.max(0, s.total - used)))}</span></div>`;
+  } else if (used) {
+    traffic = `<div class="sub-traffic"><span class="small">${t('subs.usedOnly', fmtBytes(used))}</span></div>`;
+  }
+  let expire = '';
+  if (s.expire) {
+    const days = Math.ceil((s.expire * 1000 - Date.now()) / 86400000);
+    const date = new Date(s.expire * 1000).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const cls = days <= 0 ? 'bad' : days <= 3 ? 'mid' : '';
+    expire = `<span class="sub-exp ${cls}">${days <= 0 ? t('subs.expired', date) : t('subs.until', date, days)}</span>`;
+  }
+  const upd = s.updated_ms ? new Date(s.updated_ms).toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+  return `<div class="group-head sub ${s.last_error ? 'err' : ''}" data-group="${esc(s.url)}">
+    <button class="caret ${open ? 'open' : ''}" data-act="toggle" title="${t('subs.toggle')}">▸</button>
+    <div class="gh-main">
+      <div class="gh-title"><span>${esc(s.name || s.url)}</span><span class="muted small">${t('subs.nodes', count)}</span></div>
+      <div class="gh-meta muted small">${expire}<span title="${esc(s.url)}">${t('subs.updated', upd)}</span></div>
+      ${traffic}
+      ${s.last_error ? `<div class="gh-err small">${esc(s.last_error)}</div>` : ''}
+    </div>
+    <div class="gh-actions">
+      <button class="icon-btn" data-act="update" title="${t('subs.update')}">⟳</button>
+      <button class="icon-btn" data-act="delete" title="${t('nodes.subDelete')}">×</button>
+    </div>
+  </div>`;
+}
+
+function nodeRow(n) {
+  const lat = latHtml(n, true);
+  const latTitle = esc(latTip(n));
+  const autoLabel = n.engine === 'auto' && n.effective ? ` (${engineName(n.effective)})` : '';
+  const opt = (v, label, ok) => `<option value="${v}" ${n.engine === v ? 'selected' : ''} ${ok ? '' : 'disabled'}>${label}</option>`;
+  return `
+    <div class="node ${n.id === snap.selected ? 'selected' : ''}" data-id="${n.id}">
+      <div class="radio"></div>
+      <div style="min-width:0">
+        <div class="node-name">${esc(n.name)}</div>
+        <div class="node-meta">${esc(n.summary)} · ${esc(n.server)}:${n.port}</div>
+      </div>
+      ${engineBadge(n.effective)}
+      <span class="lat ${latClass(n)}" title="${latTitle}">${lat}</span>
+      <select class="engine-sel" title="${esc(n.effective_error || t('nodes.engineTitle'))}">
+        ${opt('auto', 'Auto' + autoLabel, true)}
+        ${opt('xray', 'Xray', n.supported.includes('xray'))}
+        ${opt('singbox', 'sing-box', n.supported.includes('singbox'))}
+      </select>
+      <button class="icon-btn del" title="${t('nodes.delete')}">×</button>
+    </div>`;
+}
+
 function renderNodes() {
   const filter = $('#node-filter').value.trim().toLowerCase();
-  const key = JSON.stringify([lang, snap.settings.smart_connect, snap.selected, filter, snap.nodes.map((n) => [n.id, n.name, n.engine, n.effective, n.latency]), snap.subscriptions]);
+  const key = JSON.stringify([lang, nodeSort, [...collapsed], snap.settings.smart_connect, snap.selected, filter, snap.nodes.map((n) => [n.id, n.name, n.engine, n.effective, n.latency, n.source]), snap.subscriptions]);
   if (key === nodesKey) return;
   nodesKey = key;
 
@@ -342,47 +415,63 @@ function renderNodes() {
   $('#smart-toggle').checked = smart;
   const active = selectedNode();
   $('#smart-state').textContent = smart && active ? t('smart.active', active.name) : '';
-  const locale = lang === 'ru' ? 'ru-RU' : undefined;
-  $('#subs').innerHTML = snap.subscriptions.map((s) => `
-    <div class="sub-chip ${s.last_error ? 'err' : ''}" title="${esc(s.url)}${s.last_error ? '\n' + esc(s.last_error) : ''}">
-      <span>⟳ ${esc(s.name || s.url)}</span>
-      <span class="muted">${s.updated_ms ? new Date(s.updated_ms).toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}</span>
-      <button data-sub="${esc(s.url)}" title="${t('nodes.subDelete')}">×</button>
-    </div>`).join('');
-  $$('#subs button').forEach((b) => b.onclick = () => withBusy(null, async () => {
-    if (!(await ask(t('nodes.subConfirm'), t('dlg.delete')))) return;
-    await invoke('remove_subscription', { url: b.dataset.sub });
-    snap = await invoke('snapshot'); nodesKey = ''; renderNodes();
-  }));
+  $('#node-sort').value = nodeSort;
 
-  const nodes = snap.nodes.filter((n) => !filter || [n.name, n.summary, n.server].join(' ').toLowerCase().includes(filter));
-  $('#node-count').textContent = snap.nodes.length ? t('nodes.count', nodes.length, snap.nodes.length) : '';
-  if (!snap.nodes.length) {
+  const match = (n) => !filter || [n.name, n.summary, n.server].join(' ').toLowerCase().includes(filter);
+  const sorted = (list) => {
+    const l = list.slice();
+    if (nodeSort === 'latency') l.sort((a, b) => latencyKey(a) - latencyKey(b));
+    else if (nodeSort === 'name') l.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    return l;
+  };
+  const shown = snap.nodes.filter(match);
+  $('#node-count').textContent = snap.nodes.length ? t('nodes.count', shown.length, snap.nodes.length) : '';
+  if (!snap.nodes.length && !snap.subscriptions.length) {
     $('#node-list').innerHTML = `<div class="empty">${t('nodes.empty')}</div>`;
     return;
   }
-  $('#node-list').innerHTML = nodes.map((n) => {
-    const lat = latHtml(n, true);
-    const latTitle = esc(latTip(n));
-    const autoLabel = n.engine === 'auto' && n.effective ? ` (${engineName(n.effective)})` : '';
-    const opt = (v, label, ok) => `<option value="${v}" ${n.engine === v ? 'selected' : ''} ${ok ? '' : 'disabled'}>${label}</option>`;
-    return `
-      <div class="node ${n.id === snap.selected ? 'selected' : ''}" data-id="${n.id}">
-        <div class="radio"></div>
-        <div style="min-width:0">
-          <div class="node-name">${esc(n.name)}</div>
-          <div class="node-meta">${esc(n.summary)} · ${esc(n.server)}:${n.port}${n.source ? ' · ' + t('nodes.fromSub') : ''}</div>
-        </div>
-        ${engineBadge(n.effective)}
-        <span class="lat ${latClass(n)}" title="${latTitle}">${lat}</span>
-        <select class="engine-sel" title="${esc(n.effective_error || t('nodes.engineTitle'))}">
-          ${opt('auto', 'Auto' + autoLabel, true)}
-          ${opt('xray', 'Xray', n.supported.includes('xray'))}
-          ${opt('singbox', 'sing-box', n.supported.includes('singbox'))}
-        </select>
-        <button class="icon-btn del" title="${t('nodes.delete')}">×</button>
-      </div>`;
-  }).join('');
+
+  // Groups: each subscription (even without nodes, to show errors/traffic), then manual nodes.
+  const known = new Set(snap.subscriptions.map((s) => s.url));
+  const groups = snap.subscriptions.map((s) => ({ id: s.url, sub: s, nodes: shown.filter((n) => n.source === s.url) }));
+  const manual = shown.filter((n) => !n.source || !known.has(n.source));
+  if (manual.length || !snap.subscriptions.length) groups.push({ id: 'manual', sub: null, nodes: manual });
+  const single = groups.length === 1 && !groups[0].sub;
+
+  $('#node-list').innerHTML = groups.map((g) => {
+    // While searching, show matching nodes even in collapsed groups.
+    const open = filter ? true : !collapsed.has(g.id);
+    const head = single ? '' : g.sub ? subHeader(g.sub, g.nodes.length, open)
+      : `<div class="group-head" data-group="manual"><button class="caret ${open ? 'open' : ''}" data-act="toggle">▸</button>
+          <div class="gh-main"><div class="gh-title"><span>${t('subs.manual')}</span><span class="muted small">${t('subs.nodes', g.nodes.length)}</span></div></div></div>`;
+    if (filter && !g.nodes.length) return '';
+    return `<div class="group">${head}${open ? `<div class="group-body">${sorted(g.nodes).map(nodeRow).join('')}</div>` : ''}</div>`;
+  }).join('') || `<div class="empty">${t('nodes.nothing')}</div>`;
+
+  $$('#node-list .group-head').forEach((h) => {
+    const id = h.dataset.group;
+    $$('[data-act]', h).forEach((b) => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const act = b.dataset.act;
+      if (act === 'toggle') {
+        if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
+        saveCollapsed(); nodesKey = ''; renderNodes();
+      } else if (act === 'update') {
+        withBusy(b, async () => {
+          const r = await invoke('update_subscription', { url: id });
+          snap = await invoke('snapshot'); nodesKey = ''; renderNodes();
+          toast(t('nodes.subsResult', r.added, r.updated) + (r.errors.length ? `\n${r.errors.slice(0, 4).join('\n')}` : ''), r.errors.length ? 'error' : 'ok', 4000);
+        });
+      } else if (act === 'delete') {
+        withBusy(null, async () => {
+          if (!(await ask(t('nodes.subConfirm'), t('dlg.delete')))) return;
+          await invoke('remove_subscription', { url: id });
+          snap = await invoke('snapshot'); nodesKey = ''; renderNodes();
+        });
+      }
+    }));
+    h.addEventListener('click', () => { if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id); saveCollapsed(); nodesKey = ''; renderNodes(); });
+  });
 
   $$('#node-list .node').forEach((row) => {
     const id = row.dataset.id;
@@ -402,6 +491,11 @@ function renderNodes() {
   });
 }
 
+$('#node-sort').addEventListener('change', (e) => {
+  nodeSort = e.target.value;
+  try { localStorage.setItem('mosaic.nodeSort', nodeSort); } catch {}
+  nodesKey = ''; renderNodes();
+});
 $('#node-filter').addEventListener('input', () => renderNodes());
 $('#smart-toggle').addEventListener('change', (e) => withBusy(null, async () => {
   await invoke('set_smart', { on: e.target.checked });
@@ -540,25 +634,249 @@ $('#rules-save').addEventListener('click', (e) => withBusy(e.currentTarget, asyn
 }));
 
 // ------------------------------------------------------------------ connections
+// ------------------------------------------------------------------ connections
+// Multi-part public suffixes where the registrable domain has three labels.
+// Not the full Public Suffix List — just the common ones, enough for grouping.
+const MULTI_SUFFIX = new Set(('co.uk,org.uk,ac.uk,gov.uk,me.uk,ltd.uk,plc.uk,net.uk,co.jp,ne.jp,or.jp,ac.jp,go.jp,co.kr,or.kr,ne.kr,'
+  + 'com.au,net.au,org.au,edu.au,gov.au,co.nz,net.nz,org.nz,com.br,net.br,org.br,gov.br,com.cn,net.cn,org.cn,gov.cn,com.hk,'
+  + 'com.tw,org.tw,com.sg,com.my,co.id,co.in,net.in,org.in,co.za,com.mx,com.ar,com.tr,com.ua,org.ua,net.ua,com.ru,org.ru,'
+  + 'msk.ru,spb.ru,com.pl,net.pl,org.pl,co.il,com.eg,com.sa,com.vn,co.th,in.th,com.ph,com.pk,com.ng,co.ke,'
+  + 'github.io,gitlab.io,pages.dev,workers.dev,vercel.app,netlify.app,herokuapp.com,appspot.com,web.app,firebaseapp.com,'
+  + 'blogspot.com,cloudfront.net,azurewebsites.net,amazonaws.com,r2.dev,fly.dev').split(','));
+
+const isIp = (h) => /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':');
+function regDomain(host) {
+  if (isIp(host)) return host;
+  const parts = host.toLowerCase().replace(/\.$/, '').split('.');
+  if (parts.length <= 2) return parts.join('.');
+  const last2 = parts.slice(-2).join('.');
+  return parts.slice(MULTI_SUFFIX.has(last2) ? -3 : -2).join('.');
+}
+
+let connView = (() => { try { return localStorage.getItem('mosaic.connView') || 'full'; } catch { return 'full'; } })();
+let connSort = { key: null, dir: 1 };
+const connSel = new Map(); // id → connection, survives re-renders and pruning
+let connShown = [];         // rows currently in the table, in order
+let connList = [];
+
+function destText(c) {
+  const h = connView === 'domain' ? regDomain(c.host) : c.host;
+  if (connView !== 'full') return h;
+  return (h.includes(':') ? `[${h}]` : h) + ':' + c.port;
+}
+const outText = (c) => c.outbound === 'direct' ? t('conns.direct') : c.outbound === 'block' ? t('conns.block') : c.outbound;
+const SORTS = {
+  app: (c) => (c.process || '￿').toLowerCase(),
+  dest: (c) => destText(c).toLowerCase(),
+  rule: (c) => c.rule.toLowerCase(),
+  out: (c) => outText(c).toLowerCase(),
+  up: (c) => c.up, down: (c) => c.down,
+  time: (c) => (c.ended_ms || Date.now()) - c.started_ms,
+};
+const NUMERIC = new Set(['up', 'down', 'time']);
+
+function fillConnSort() {
+  const sel = $('#conn-sort');
+  if (!sel) return;
+  const opts = [['', t('conns.sortNone')]];
+  for (const k of Object.keys(SORTS)) {
+    const name = { up: '↑ ' + t('conns.upload'), down: '↓ ' + t('conns.download') }[k] || t('conns.' + k);
+    opts.push([`${k}:1`, `${name} ${NUMERIC.has(k) ? '↑' : 'A→Z'}`], [`${k}:-1`, `${name} ${NUMERIC.has(k) ? '↓' : 'Z→A'}`]);
+  }
+  sel.innerHTML = opts.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
+  sel.value = connSort.key ? `${connSort.key}:${connSort.dir}` : '';
+  $('#conn-view').value = connView;
+}
+
 function renderConns(list) {
+  connList = list;
   const f = $('#conn-filter').value.trim().toLowerCase();
   const activeOnly = $('#conn-active-only').checked;
   const now = Date.now();
-  const rows = list
+  let rows = list
     .filter((c) => !activeOnly || c.ended_ms == null)
-    .filter((c) => !f || `${c.process || ''} ${c.host}:${c.port} ${c.network} ${c.rule} ${c.outbound} ${c.engine || ''}`.toLowerCase().includes(f))
-    .slice(0, 400)
-    .map((c) => {
-      const out = c.outbound === 'direct' ? `<span class="badge direct">${t('conns.direct')}</span>`
-        : c.outbound === 'block' ? `<span class="badge block">${t('conns.block')}</span>`
-        : `${esc(c.outbound)} ${engineBadge(c.engine === 'Xray' ? 'xray' : 'singbox')}`;
-      const dur = fmtDur((c.ended_ms || now) - c.started_ms);
-      const net = c.network === 'udp' ? '<span class="net">UDP</span> ' : '';
-      return `<tr class="${c.ended_ms ? 'closed' : ''} ${c.error ? 'err' : ''}" title="${esc(c.error || '')}">
-        <td class="app-cell">${esc(c.process || '—')}</td><td>${net}${esc(c.host)}:${c.port}</td><td class="rule-cell">${esc(c.rule)}</td><td>${out}</td>
-        <td class="num">${fmtBytes(c.up)}</td><td class="num">${fmtBytes(c.down)}</td><td class="num">${dur}</td></tr>`;
+    .filter((c) => !f || `${c.process || ''} ${c.host}:${c.port} ${destText(c)} ${c.network} ${c.rule} ${c.outbound} ${c.engine || ''}`.toLowerCase().includes(f));
+  if (connSort.key) {
+    const get = SORTS[connSort.key];
+    const d = connSort.dir;
+    rows = rows.map((c) => [get(c), c]).sort((a, b) => (a[0] < b[0] ? -d : a[0] > b[0] ? d : 0)).map((x) => x[1]);
+  }
+  connShown = rows.slice(0, 400);
+  $('#conn-table tbody').innerHTML = connShown.map((c) => {
+    const out = c.outbound === 'direct' ? `<span class="badge direct">${t('conns.direct')}</span>`
+      : c.outbound === 'block' ? `<span class="badge block">${t('conns.block')}</span>`
+      : `${esc(c.outbound)} ${engineBadge(c.engine === 'Xray' ? 'xray' : 'singbox')}`;
+    const dur = fmtDur((c.ended_ms || now) - c.started_ms);
+    const net = c.network === 'udp' ? '<span class="net">UDP</span> ' : '';
+    const sel = connSel.has(c.id);
+    const full = `${c.host}:${c.port}`;
+    return `<tr data-id="${c.id}" class="${c.ended_ms ? 'closed' : ''} ${c.error ? 'err' : ''} ${sel ? 'sel' : ''}" title="${esc(c.error || '')}">
+      <td class="c-sel"><input type="checkbox" ${sel ? 'checked' : ''} aria-label="${t('conns.select')}" /></td>
+      <td class="c-app">${esc(c.process || '—')}</td>
+      <td class="c-dest" title="${esc(full)}">${net}${esc(destText(c))}</td>
+      <td class="c-rule">${esc(c.rule)}</td><td class="c-out">${out}</td>
+      <td class="c-up num">${fmtBytes(c.up)}</td><td class="c-down num">${fmtBytes(c.down)}</td><td class="c-time num">${dur}</td>
+      <td class="c-act"><button class="icon-btn add" title="${t('conns.toRulesOne')}">+</button></td></tr>`;
+  }).join('') || `<tr><td colspan="9" class="muted">${t('conns.empty')}</td></tr>`;
+
+  $$('#conn-table th[data-sort]').forEach((th) => {
+    th.classList.toggle('sort-asc', connSort.key === th.dataset.sort && connSort.dir === 1);
+    th.classList.toggle('sort-desc', connSort.key === th.dataset.sort && connSort.dir === -1);
+  });
+  updateSelBar();
+}
+
+function updateSelBar() {
+  const n = connSel.size;
+  $('#conn-selbar').classList.toggle('hidden', !n);
+  $('#view-conns').classList.toggle('has-sel', n > 0);
+  $('#conn-selcount').textContent = t('conns.selected', n);
+  const all = $('#conn-all');
+  const shownSel = connShown.filter((c) => connSel.has(c.id)).length;
+  all.checked = connShown.length > 0 && shownSel === connShown.length;
+  all.indeterminate = shownSel > 0 && shownSel < connShown.length;
+}
+
+function toggleConn(id, on) {
+  const c = connShown.find((x) => x.id === id) || connList.find((x) => x.id === id);
+  if (!c) return;
+  if (on ?? !connSel.has(id)) connSel.set(id, c); else connSel.delete(id);
+  const tr = $(`#conn-table tr[data-id="${id}"]`);
+  if (tr) { tr.classList.toggle('sel', connSel.has(id)); $('input', tr).checked = connSel.has(id); }
+  updateSelBar();
+}
+
+$('#conn-table tbody').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr[data-id]');
+  if (!tr) return;
+  const id = +tr.dataset.id;
+  if (e.target.closest('.add')) {
+    const c = connShown.find((x) => x.id === id);
+    if (c) addToRulesDialog([c]);
+    return;
+  }
+  if (e.target.matches('input[type=checkbox]')) { toggleConn(id, e.target.checked); return; }
+  // Tapping the row toggles selection, unless the user is selecting text.
+  if (String(window.getSelection && window.getSelection()).length) return;
+  toggleConn(id);
+});
+$('#conn-all').addEventListener('change', (e) => {
+  for (const c of connShown) { if (e.target.checked) connSel.set(c.id, c); else connSel.delete(c.id); }
+  renderConns(connList);
+});
+$$('#conn-table th[data-sort]').forEach((th) => th.addEventListener('click', () => {
+  const k = th.dataset.sort;
+  // First click: A→Z for text, largest first for numbers; second flips; third resets.
+  const first = NUMERIC.has(k) ? -1 : 1;
+  if (connSort.key !== k) connSort = { key: k, dir: first };
+  else if (connSort.dir === first) connSort.dir = -first;
+  else connSort = { key: null, dir: 1 };
+  fillConnSort(); renderConns(connList);
+}));
+$('#conn-sort').addEventListener('change', (e) => {
+  const [k, d] = e.target.value.split(':');
+  connSort = k ? { key: k, dir: +d } : { key: null, dir: 1 };
+  renderConns(connList);
+});
+$('#conn-view').addEventListener('change', (e) => {
+  connView = e.target.value;
+  try { localStorage.setItem('mosaic.connView', connView); } catch {}
+  renderConns(connList);
+});
+['input', 'change'].forEach((ev) => {
+  $('#conn-filter').addEventListener(ev, () => renderConns(connList));
+  $('#conn-active-only').addEventListener(ev, () => renderConns(connList));
+});
+$('#conn-clear').addEventListener('click', () => { connSel.clear(); renderConns(connList); });
+$('#conn-to-rules').addEventListener('click', () => addToRulesDialog([...connSel.values()]));
+fillConnSort();
+
+// What a rule can match, and the value each connection gives for it.
+const MATCHERS = [
+  { kind: 'domain_suffix', label: 'conns.mDomainSuffix', val: (c) => (isIp(c.host) ? null : regDomain(c.host)) },
+  { kind: 'domain', label: 'conns.mDomain', val: (c) => (isIp(c.host) ? null : c.host.toLowerCase()) },
+  { kind: 'process_name', label: 'conns.mProcess', val: (c) => c.process || null },
+  { kind: 'ip_cidr', label: 'conns.mIp', val: (c) => (isIp(c.host) ? `${c.host}/${c.host.includes(':') ? 128 : 32}` : null) },
+  { kind: 'port', label: 'conns.mPort', val: (c) => String(c.port) },
+];
+
+function existingValues(kind, target) {
+  const set = new Set();
+  for (const r of snap.rules) {
+    if (r.kind !== kind || r.target !== target || !r.enabled) continue;
+    r.value.split(',').map((v) => v.trim().toLowerCase()).filter(Boolean).forEach((v) => set.add(v));
+  }
+  return set;
+}
+
+function addToRulesDialog(conns) {
+  if (!conns.length) return;
+  const counts = MATCHERS.map((m) => new Set(conns.map(m.val).filter(Boolean)).size);
+  let mi = counts.findIndex((n) => n > 0);
+  // Sensible default target: send elsewhere than where they went now.
+  const outs = new Set(conns.map((c) => c.outbound));
+  let target = outs.has('direct') || outs.has('block') ? 'proxy' : 'direct';
+  let top = true;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-wrap';
+  wrap.innerHTML = `<div class="modal card add-rule" role="dialog" aria-modal="true">
+    <div class="ar-head"><h3>${t('conns.toRules')}</h3><span class="muted small">${t('conns.fromN', conns.length)}</span></div>
+    <div class="ar-label muted small">${t('conns.matchBy')}</div>
+    <div class="ar-kinds">${MATCHERS.map((m, i) => `
+      <label class="ar-kind ${counts[i] ? '' : 'disabled'}"><input type="radio" name="ar-kind" value="${i}" ${i === mi ? 'checked' : ''} ${counts[i] ? '' : 'disabled'} />
+        <span>${t(m.label)}</span><span class="muted small">${counts[i] || '—'}</span></label>`).join('')}</div>
+    <div class="ar-label muted small">${t('conns.values')}</div>
+    <textarea class="ar-values" rows="3" spellcheck="false"></textarea>
+    <div class="ar-note muted small"></div>
+    <div class="ar-row">
+      <label class="ar-target"><span class="muted small">${t('conns.sendTo')}</span><select class="ar-tsel">${targetOptions(target)}</select></label>
+      <label class="check"><input type="checkbox" class="ar-top" checked /> <span>${t('conns.atTop')}</span></label>
+    </div>
+    <div class="modal-actions"><button class="btn ghost" data-a="0">${t('dlg.cancel')}</button><button class="btn primary" data-a="1">${t('conns.addApply')}</button></div>
+  </div>`;
+  const ta = $('.ar-values', wrap);
+  const note = $('.ar-note', wrap);
+  const fill = () => {
+    const m = MATCHERS[mi];
+    const have = existingValues(m.kind, target);
+    const vals = [...new Set(conns.map(m.val).filter(Boolean))];
+    const fresh = vals.filter((v) => !have.has(v.toLowerCase()));
+    ta.value = fresh.join(', ');
+    const skipped = conns.length - conns.filter((c) => m.val(c)).length;
+    note.textContent = [
+      vals.length - fresh.length ? t('conns.already', vals.length - fresh.length) : '',
+      skipped ? t('conns.noValue', skipped) : '',
+      m.kind === 'domain_suffix' ? t('conns.suffixHint') : '',
+    ].filter(Boolean).join(' · ');
+  };
+  fill();
+  const done = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') done(); };
+  $$('input[name=ar-kind]', wrap).forEach((r) => r.addEventListener('change', () => { mi = +r.value; fill(); }));
+  $('.ar-tsel', wrap).addEventListener('change', (e) => { target = e.target.value; fill(); });
+  $('.ar-top', wrap).addEventListener('change', (e) => { top = e.target.checked; });
+  wrap.addEventListener('click', async (e) => {
+    if (e.target === wrap || e.target.closest('[data-a="0"]')) return done();
+    const ok = e.target.closest('[data-a="1"]');
+    if (!ok) return;
+    const values = [...new Set(ta.value.split(/[,\s]+/).map((v) => v.trim()).filter(Boolean))];
+    if (!values.length) { toast(t('conns.nothingToAdd'), 'error', 3000); return; }
+    await withBusy(ok, async () => {
+      const rule = { kind: MATCHERS[mi].kind, value: values.join(','), target, enabled: true };
+      const rules = JSON.parse(JSON.stringify(snap.rules));
+      if (top) rules.unshift(rule); else rules.push(rule);
+      await invoke('set_rules', { rules, finalTarget: snap.settings.final_target });
+      snap = await invoke('snapshot');
+      rulesDraft = null;
+      done();
+      for (const c of conns) connSel.delete(c.id);
+      renderConns(connList);
+      toast(t(snap.status.connected ? 'conns.ruleAdded' : 'conns.ruleSaved', values.length), 'ok', 3000);
     });
-  $('#conn-table tbody').innerHTML = rows.join('') || `<tr><td colspan="7" class="muted">${t('conns.empty')}</td></tr>`;
+  });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(wrap);
 }
 
 // ------------------------------------------------------------------ engines

@@ -1,5 +1,6 @@
 //! Import: share links (vless, vmess, trojan, ss, hy2/hysteria2, tuic,
-//! wireguard/wg), base64 subscriptions and WireGuard `.conf` files.
+//! wireguard/wg), base64 subscriptions, WireGuard `.conf` files, and whole
+//! Clash/mihomo YAML and sing-box JSON configs (see `formats`).
 
 use crate::b64;
 use crate::model::*;
@@ -16,6 +17,26 @@ pub fn parse_text(text: &str) -> ImportResult {
     let mut res = ImportResult::default();
     let t = text.trim().trim_start_matches('\u{feff}');
     if t.is_empty() {
+        return res;
+    }
+    let whole = if crate::formats::looks_like_singbox(t) {
+        Some(("sing-box", crate::formats::parse_singbox(t)))
+    } else if crate::formats::looks_like_clash(t) {
+        Some(("Clash", crate::formats::parse_clash(t)))
+    } else {
+        None
+    };
+    if let Some((fmt, r)) = whole {
+        match r {
+            Ok((nodes, errors)) => {
+                res.nodes = nodes;
+                res.errors = errors;
+                if res.nodes.is_empty() && res.errors.is_empty() {
+                    res.errors.push(format!("{fmt} config without proxies"));
+                }
+            }
+            Err(e) => res.errors.push(format!("{fmt} config: {e}")),
+        }
         return res;
     }
     if t.contains("[Interface]") && t.contains("[Peer]") {

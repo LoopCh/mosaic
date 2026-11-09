@@ -340,14 +340,25 @@ fn host_of(url: &str) -> String {
     rest.split(|c| c == '/' || c == '?' || c == '#').next().unwrap_or(rest).to_string()
 }
 
-async fn fetch(url: String, ua: String) -> Result<String, String> {
+/// A downloaded subscription: body plus what the provider says about it.
+struct Fetched {
+    body: String,
+    userinfo: Option<String>,
+    title: Option<String>,
+}
+
+async fn fetch(url: String, ua: String) -> Result<Fetched, String> {
     tokio::task::spawn_blocking(move || {
         let resp = ureq::get(&url)
             .set("User-Agent", &ua)
             .timeout(Duration::from_secs(20))
             .call()
             .map_err(|e| e.to_string())?;
-        resp.into_string().map_err(|e| e.to_string())
+        let userinfo = resp.header("subscription-userinfo").map(String::from);
+        let title = crate::formats::subscription_title(resp.header("profile-title"), resp.header("content-disposition"));
+        // into_string() stops at 10 MB, enough for any subscription.
+        let body = resp.into_string().map_err(|e| e.to_string())?;
+        Ok(Fetched { body, userinfo, title })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -612,7 +623,16 @@ impl Controller {
         {
             let mut g = self.inner.lock().await;
             if !g.state.subscriptions.iter().any(|s| s.url == url) {
-                g.state.subscriptions.push(Subscription { url: url.clone(), name: host_of(&url), updated_ms: 0, last_error: None });
+                g.state.subscriptions.push(Subscription {
+                    url: url.clone(),
+                    name: host_of(&url),
+                    upload: None,
+                    download: None,
+                    total: None,
+                    expire: None,
+                    updated_ms: 0,
+                    last_error: None,
+                });
                 self.save(&g.state);
             }
         }
@@ -624,8 +644,8 @@ impl Controller {
         let fetched = fetch(url.to_string(), ua).await;
         let mut g = self.inner.lock().await;
         let st = &mut g.state;
-        let body = match fetched {
-            Ok(b) => b,
+        let fetched = match fetched {
+            Ok(f) => f,
             Err(e) => {
                 if let Some(s) = st.subscriptions.iter_mut().find(|s| s.url == url) {
                     s.last_error = Some(e.clone());
@@ -634,7 +654,7 @@ impl Controller {
                 return Err(format!("Could not download the subscription: {e}"));
             }
         };
-        let res = links::parse_text(&body);
+        let res = links::parse_text(&fetched.body);
         if res.nodes.is_empty() {
             let why = res.errors.first().cloned().unwrap_or_else(|| "empty response".into());
             if let Some(s) = st.subscriptions.iter_mut().find(|s| s.url == url) {
@@ -649,6 +669,15 @@ impl Controller {
         if let Some(s) = st.subscriptions.iter_mut().find(|s| s.url == url) {
             s.updated_ms = now_ms();
             s.last_error = None;
+            if let Some(ui) = fetched.userinfo.as_deref().map(crate::formats::parse_userinfo) {
+                s.upload = ui.upload;
+                s.download = ui.download;
+                s.total = ui.total;
+                s.expire = ui.expire;
+            }
+            if let Some(t) = fetched.title.clone() {
+                s.name = t;
+            }
         }
         self.save(st);
         Ok(ImportSummary { added, updated, errors: res.errors })

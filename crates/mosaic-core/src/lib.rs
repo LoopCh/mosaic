@@ -17,6 +17,7 @@ pub mod b64;
 pub mod controller;
 pub mod dns;
 pub mod engines;
+pub mod formats;
 pub mod geo;
 pub mod hub;
 #[cfg(target_os = "linux")]

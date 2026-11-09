@@ -110,9 +110,13 @@
         <div><div class="set-title" data-i18n="smart.title"></div><div class="set-desc" data-i18n="smart.desc"></div></div>
         <div class="smart-state muted small" id="smart-state"></div>
       </div>
-      <div id="subs" class="subs"></div>
       <div class="filter-row">
         <input id="node-filter" data-i18n-ph="nodes.filterPh" />
+        <select id="node-sort" class="sort-sel">
+          <option value="order" data-i18n="nodes.sortOrder"></option>
+          <option value="latency" data-i18n="nodes.sortLatency"></option>
+          <option value="name" data-i18n="nodes.sortName"></option>
+        </select>
         <span class="muted small" id="node-count"></span>
       </div>
       <div id="node-list" class="node-list"></div>
@@ -150,15 +154,36 @@
         <h1 data-i18n="nav.conns"></h1>
         <div class="actions">
           <input id="conn-filter" data-i18n-ph="conns.filterPh" />
+          <select id="conn-view" data-i18n-title="conns.viewTitle">
+            <option value="full" data-i18n="conns.viewFull"></option>
+            <option value="host" data-i18n="conns.viewHost"></option>
+            <option value="domain" data-i18n="conns.viewDomain"></option>
+          </select>
+          <select id="conn-sort" class="narrow-only"></select>
           <label class="check"><input type="checkbox" id="conn-active-only" /> <span data-i18n="conns.activeOnly"></span></label>
         </div>
       </header>
       <p class="muted lead" data-i18n="conns.lead"></p>
       <div class="table-wrap">
         <table class="table" id="conn-table">
-          <thead><tr><th data-i18n="conns.app"></th><th data-i18n="conns.dest"></th><th data-i18n="conns.rule"></th><th data-i18n="conns.out"></th><th class="num">↑</th><th class="num">↓</th><th class="num" data-i18n="conns.time"></th></tr></thead>
+          <thead><tr>
+            <th class="c-sel"><input type="checkbox" id="conn-all" data-i18n-title="conns.selectAll" /></th>
+            <th class="c-app" data-sort="app" data-i18n="conns.app"></th>
+            <th class="c-dest" data-sort="dest" data-i18n="conns.dest"></th>
+            <th class="c-rule" data-sort="rule" data-i18n="conns.rule"></th>
+            <th class="c-out" data-sort="out" data-i18n="conns.out"></th>
+            <th class="c-up num" data-sort="up">↑</th>
+            <th class="c-down num" data-sort="down">↓</th>
+            <th class="c-time num" data-sort="time" data-i18n="conns.time"></th>
+            <th class="c-act"></th>
+          </tr></thead>
           <tbody></tbody>
         </table>
+      </div>
+      <div class="selbar hidden" id="conn-selbar">
+        <span id="conn-selcount"></span>
+        <button class="btn primary" id="conn-to-rules" data-i18n="conns.toRules"></button>
+        <button class="btn ghost" id="conn-clear" data-i18n="conns.clearSel"></button>
       </div>
     </section>
 

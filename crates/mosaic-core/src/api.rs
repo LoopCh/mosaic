@@ -34,6 +34,7 @@ pub async fn dispatch(ctl: &Arc<Controller>, cmd: &str, args: &Value) -> Result<
         "import_text" => json(ctl.import_text(&arg::<String>(args, &["text"])?).await),
         "add_subscription" => json(ctl.add_subscription(&arg::<String>(args, &["url"])?).await?),
         "update_subscriptions" => json(ctl.update_all_subscriptions().await),
+        "update_subscription" => json(ctl.update_subscription(&arg::<String>(args, &["url"])?).await?),
         "remove_subscription" => json(ctl.remove_subscription(&arg::<String>(args, &["url"])?).await),
         "remove_node" => json(ctl.remove_node(&arg::<String>(args, &["id"])?).await),
         "select_node" => json(ctl.select_node(&arg::<String>(args, &["id"])?).await?),

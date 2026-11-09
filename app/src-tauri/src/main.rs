@@ -52,6 +52,11 @@ async fn update_subscriptions(ctl: Ctl<'_>) -> Result<ImportSummary, String> {
 }
 
 #[tauri::command]
+async fn update_subscription(ctl: Ctl<'_>, url: String) -> Result<ImportSummary, String> {
+    ctl.update_subscription(&url).await
+}
+
+#[tauri::command]
 async fn remove_subscription(ctl: Ctl<'_>, url: String) -> Result<(), String> {
     ctl.remove_subscription(&url).await;
     Ok(())
@@ -304,6 +309,7 @@ fn main() {
             import_text,
             add_subscription,
             update_subscriptions,
+            update_subscription,
             remove_subscription,
             remove_node,
             select_node,

@@ -1,4 +1,4 @@
-# Mosaic 0.8
+# Mosaic 0.9
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -6,6 +6,27 @@ that only carry traffic to servers. Rules can send different traffic to nodes on
 different engines at the same time.
 
 Interface languages: English, Русский (automatic, switchable in Settings).
+
+Docs: [architecture and tools](docs/ARCHITECTURE.md) · [project overview, history, plans](docs/PROJECT.md) (Russian).
+
+## New in 0.9 — subscriptions, more formats, connections → rules
+
+- **Subscription info.** Nodes are grouped by subscription. Each group header shows the title the provider
+  sends (`profile-title` / `content-disposition`), traffic used and left with a bar
+  (`subscription-userinfo`), the expiry date with days left (highlighted when ≤ 3 days or expired), the last
+  update and its error. Every subscription can be updated (⟳) or deleted on its own; groups collapse.
+- **Import Clash / mihomo YAML and sing-box JSON.** Paste a config or add a subscription that returns one:
+  `proxies:` (ss, vmess, vless incl. REALITY, trojan, hysteria2, tuic, wireguard; ws/grpc/httpupgrade/xhttp)
+  and sing-box `outbounds`/`endpoints` are converted to nodes. Groups, direct/reject entries are skipped;
+  unsupported types (ssr, plugins) are listed as errors.
+- **Nodes:** sort as added / by latency / by name (remembered), “Test all”, search keeps working across groups.
+- **Connections → rules.** Select one or many connections (checkboxes, select all, or tap a card on phones),
+  or press “+” on a row, and choose what the rule matches: domain with subdomains (registrable domain,
+  `bbc.co.uk` not `co.uk`), exact domain, application, IP or port. Values are deduplicated, ones already in
+  rules are skipped, the list is editable; choose where to send it and whether to put it first. The rule
+  applies instantly.
+- **Connections table:** sort by any column (click the header; a sort menu on phones), destination shown as
+  `host:port`, host only, or domain only.
 
 ## New in 0.8 — native TUN on Linux
 

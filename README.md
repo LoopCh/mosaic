@@ -20,6 +20,10 @@ Interface languages: English, Русский (automatic, switchable in Settings)
   TCP/IP (ipstack), built-in fake-IP DNS, TLS SNI / HTTP Host sniffing, bypass routes
   for node servers. Shipped as a separate build so it can never break the stable one.
 - English/Russian UI, English core messages.
+- **DNS leak protection (0.2.1, Windows):** in TUN mode Mosaic adds Windows Filtering Platform
+  rules that block DNS (port 53) everywhere except the TUN interface; Mosaic and its engines are
+  exempt. The WFP session is dynamic, so Windows removes the rules automatically even if Mosaic
+  crashes. Toggle: Settings → “DNS leak protection”. Status is shown on the Home screen.
 
 ## Quick start (Windows)
 
@@ -71,14 +75,15 @@ mosaic-cli run --tun --native       # native TUN (native-tun build, admin consol
    as administrator. Check `curl ifconfig.me` in a console, browsing, a UDP app, and that
    closing the app restores normal internet.
 5. **Language.** Settings → Interface language.
+6. **DNS leaks.** In TUN mode run the extended test on dnsleaktest.com: only resolvers on the VPN
+   side should appear, none from your ISP. Home shows “DNS protected”.
 
 If something fails: send the *Logs* tab and `%APPDATA%\Mosaic\run\*.json`.
 
 ## Known limitations
 
-- Native TUN: Windows only; IPv4 DNS answers only (IPv6 traffic is captured but apps get IPv4);
-  if your DNS server is inside your LAN, Windows may also ask it directly and some apps will
-  connect by IP (Mosaic then routes by IP + TLS SNI sniffing for ports 80/443/8080/8443).
+- Native TUN: Windows only; IPv4 DNS answers only (IPv6 traffic is captured but apps get IPv4).
+- DNS leak protection also blocks DNS to local resolvers (127.0.0.1:53); turn it off if you run one.
 - Geosite `regexp:` entries are skipped (no regex engine in the core yet).
 - System-proxy mode carries UDP only for apps that speak SOCKS5 UDP.
 - No tray/autostart yet; Linux/macOS/mobile are later stages.

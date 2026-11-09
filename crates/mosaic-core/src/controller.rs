@@ -57,6 +57,8 @@ pub struct Status {
     pub listen_port: Option<u16>,
     pub system_proxy: bool,
     pub tun: bool,
+    /// DNS leak protection (WFP filters) is active.
+    pub dns_protected: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,9 +118,22 @@ struct Session {
     direct_port: Option<u16>,
     geo: Arc<GeoData>,
     resolver: Arc<Resolver>,
+    #[cfg(windows)]
+    dns_guard: Option<crate::wfp::DnsGuard>,
 }
 
 impl Session {
+    fn dns_protected(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.dns_guard.is_some()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+
     fn tun_up(&self) -> bool {
         #[cfg(feature = "native-tun")]
         {
@@ -309,6 +324,7 @@ impl Controller {
             listen_port: s.map(|s| s.hub.port),
             system_proxy: s.map_or(false, |s| s.system_proxy),
             tun: s.map_or(false, |s| s.tun_up()),
+            dns_protected: s.map_or(false, |s| s.dns_protected()),
         };
         let engine_infos = EngineKind::ALL
             .iter()
@@ -525,7 +541,8 @@ impl Controller {
                     || old.listen_port != new.listen_port
                     || old.block_quic != new.block_quic
                     || old.tun_stack != new.tun_stack
-                    || old.direct_dns != new.direct_dns)
+                    || old.direct_dns != new.direct_dns
+                    || old.dns_leak_protection != new.dns_leak_protection)
         };
         if restart {
             self.disconnect().await;
@@ -687,6 +704,8 @@ impl Controller {
             direct_port,
             geo,
             resolver,
+            #[cfg(windows)]
+            dns_guard: None,
         };
         let mut s = draft;
         s.hub.update(routing_for(&g.state, &s));
@@ -730,11 +749,34 @@ impl Controller {
             self.teardown(s).await;
             return Err(e);
         }
+        if tun && settings.dns_leak_protection {
+            self.protect_dns(&mut s);
+        }
         self.stats.clear_closed();
         self.logs.push("[hub] connected");
         g.session = Some(s);
         Ok(())
     }
+
+    /// Block DNS that bypasses the tunnel (Windows WFP). Failure is logged, not fatal.
+    #[cfg(windows)]
+    fn protect_dns(&self, s: &mut Session) {
+        let mut apps: Vec<PathBuf> = EngineKind::ALL.iter().filter_map(|k| engines::find(*k)).collect();
+        if let Ok(exe) = std::env::current_exe() {
+            apps.push(exe);
+        }
+        let res = crate::wfp::interface_index("Mosaic").and_then(|idx| crate::wfp::DnsGuard::install(idx, &apps));
+        match res {
+            Ok(g) => {
+                s.dns_guard = Some(g);
+                self.logs.push("[hub] DNS leak protection on: DNS outside the tunnel is blocked");
+            }
+            Err(e) => self.logs.push(format!("[hub] DNS leak protection could not be enabled: {e}")),
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn protect_dns(&self, _s: &mut Session) {}
 
     #[cfg(feature = "native-tun")]
     async fn start_native(&self, s: &mut Session, nodes: &[Node]) -> Result<(), String> {
@@ -763,6 +805,8 @@ impl Controller {
         let engines = s.engines;
         let front = s.front;
         let system_proxy = s.system_proxy;
+        #[cfg(windows)]
+        let dns_guard = s.dns_guard;
         if system_proxy {
             if let Err(e) = sys::unset_system_proxy() {
                 self.logs.push(format!("[hub] could not disable the system proxy: {e}"));
@@ -779,6 +823,9 @@ impl Controller {
         for p in engines {
             p.stop().await;
         }
+        // Filters go last so DNS stays inside the tunnel until it is gone.
+        #[cfg(windows)]
+        drop(dns_guard);
     }
 
     pub async fn disconnect(&self) {

@@ -148,7 +148,8 @@ function renderHome() {
   power.classList.toggle('busy', connecting);
   $('#hero-state').textContent = connecting ? t('status.busy') : st.connected ? t('status.on') : t('status.off');
   if (st.connected) {
-    $('#hero-sub').textContent = st.tun ? (st.tun_stack === 'native' ? t('hero.viaTunNative') : t('hero.viaTun'))
+    $('#hero-sub').textContent = st.tun
+      ? (st.tun_stack === 'native' ? t('hero.viaTunNative') : t('hero.viaTun')) + ' · ' + (st.dns_protected ? t('hero.dnsOk') : t('hero.dnsOff'))
       : st.system_proxy ? t('hero.viaProxy', st.listen_port) : t('hero.viaPort', st.listen_port);
   } else {
     $('#hero-sub').textContent = snap.nodes.length ? t('hero.click') : t('hero.addNode');
@@ -497,6 +498,7 @@ function renderSettings() {
   $('#set-lang').value = s.ui_language || 'auto';
   $('#set-port').value = s.listen_port;
   $('#set-quic').checked = s.block_quic;
+  $('#set-dnsleak').checked = s.dns_leak_protection !== false;
   $('#set-testurl').value = s.test_url;
   $('#set-ua').value = s.user_agent;
   $('#set-dns').value = s.direct_dns || '';
@@ -513,6 +515,7 @@ $('#settings-save').addEventListener('click', (e) => withBusy(e.currentTarget, a
     ui_language: $('#set-lang').value,
     listen_port: parseInt($('#set-port').value, 10) || 7890,
     block_quic: $('#set-quic').checked,
+    dns_leak_protection: $('#set-dnsleak').checked,
     test_url: $('#set-testurl').value.trim(),
     user_agent: $('#set-ua').value.trim(),
     direct_dns: $('#set-dns').value.trim() || '8.8.8.8',

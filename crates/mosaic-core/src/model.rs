@@ -363,6 +363,8 @@ pub struct Settings {
     pub tun_stack: TunStack,
     /// "auto", "en", "ru" … — used only by the UI.
     pub ui_language: String,
+    /// Windows: block DNS outside the TUN interface while TUN is up.
+    pub dns_leak_protection: bool,
 }
 
 impl Default for Settings {
@@ -378,6 +380,7 @@ impl Default for Settings {
             domain_strategy: DomainStrategy::AsIs,
             tun_stack: TunStack::Singbox,
             ui_language: "auto".into(),
+            dns_leak_protection: true,
         }
     }
 }

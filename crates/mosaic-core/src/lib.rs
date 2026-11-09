@@ -31,5 +31,7 @@ pub mod sys;
 pub mod tun_native;
 pub mod udp;
 pub mod util;
+#[cfg(windows)]
+pub mod wfp;
 
 pub use controller::Controller;

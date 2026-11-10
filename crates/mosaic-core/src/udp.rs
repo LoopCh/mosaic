@@ -180,7 +180,8 @@ impl Session {
                 return;
             }
             let routing = current(&self.shared);
-            let (decision, rule) = routing.decide_full(&host, port, self.process.as_deref()).await;
+            let decided = routing.decide_full(&host, port, self.process.as_deref()).await;
+            let (decision, rule) = routing.guard_udp(decided, &host, payload);
             let (outbound, engine) = outbound_label(&decision);
             let conn = self.stats.open(&host, port, "udp", self.process.as_deref(), rule, outbound, engine);
             let (target, closed) = match decision {
@@ -306,16 +307,26 @@ pub async fn relay_flow<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let (decision, rule) = routing.decide_full(&host, port, process.as_deref()).await;
+    let mut flow = flow;
+    // The first datagram decides together with the rules (WebRTC protection looks at it).
+    let mut first = vec![0u8; 65536];
+    let n = match timeout(FLOW_IDLE, flow.read(&mut first)).await {
+        Ok(Ok(n)) if n > 0 => n,
+        _ => return Ok(()),
+    };
+    first.truncate(n);
+    let decided = routing.decide_full(&host, port, process.as_deref()).await;
+    let (decision, rule) = routing.guard_udp(decided, &host, &first);
     let (outbound, engine) = outbound_label(&decision);
     let conn = stats.open(&host, port, "udp", process.as_deref(), rule, outbound, engine);
-    let res = flow_inner(flow, &host, port, decision, &routing, &conn, &stats).await;
+    let res = flow_inner(flow, &first, &host, port, decision, &routing, &conn, &stats).await;
     stats.close(&conn, res.as_ref().err().map(|e| e.to_string()));
     res
 }
 
 async fn flow_inner<S>(
     mut flow: S,
+    first: &[u8],
     host: &str,
     port: u16,
     decision: Decision,
@@ -337,6 +348,8 @@ where
             };
             let sock = crate::net::udp_socket(ip.is_ipv6())?;
             sock.connect(SocketAddr::new(ip, port)).await?;
+            sock.send(first).await?;
+            stats.add(conn, first.len() as u64, true);
             loop {
                 tokio::select! {
                     r = timeout(FLOW_IDLE, flow.read(&mut buf)) => {
@@ -360,6 +373,8 @@ where
         }
         Decision::Via(u) => {
             let su = SocksUdp::open(u.port).await?;
+            su.send_to_target(host, port, first).await?;
+            stats.add(conn, first.len() as u64, true);
             loop {
                 tokio::select! {
                     r = timeout(FLOW_IDLE, flow.read(&mut buf)) => {

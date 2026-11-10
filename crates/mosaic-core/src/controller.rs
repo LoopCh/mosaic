@@ -39,6 +39,26 @@ pub struct Latency {
     pub at_ms: u64,
 }
 
+/// What a connect / reconnect is doing right now (polled by the UI without waiting
+/// for the controller lock, which connect holds).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Progress {
+    /// prepare | engines | check | route | dns — None when idle.
+    pub step: Option<&'static str>,
+    pub detail: Option<String>,
+    pub since_ms: u64,
+}
+
+/// Does traffic actually go through the active node?
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Health {
+    /// "ok", "degraded" (the node stopped answering) or "unknown".
+    pub state: &'static str,
+    pub error: Option<String>,
+    pub checked_ms: u64,
+    pub ms: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct NodeView {
     #[serde(flatten)]
@@ -66,6 +86,7 @@ pub struct Status {
     pub tun: bool,
     /// DNS leak protection (WFP filters) is active.
     pub dns_protected: bool,
+    pub health: Health,
 }
 
 #[derive(Debug, Serialize)]
@@ -187,11 +208,24 @@ pub struct Controller {
     pub close_to_tray: AtomicBool,
     /// Ask the background loop for an immediate Smart Connect test.
     smart_kick: AtomicBool,
+    /// Ask the background loop to check the active node at the next tick.
+    check_kick: AtomicBool,
     app_update: std::sync::Mutex<Option<AppUpdate>>,
     /// Android: the VPN interface handed over by VpnService for the next TUN connect.
     tun_fd: std::sync::Mutex<Option<i32>>,
+    progress: std::sync::Mutex<Progress>,
+    health: std::sync::Mutex<Health>,
     dir: PathBuf,
     admin: bool,
+}
+
+/// Clears the connect progress when connect returns, however it returns.
+struct ProgressDone<'a>(&'a Controller);
+
+impl Drop for ProgressDone<'_> {
+    fn drop(&mut self) {
+        *self.0.progress.lock().unwrap() = Progress::default();
+    }
 }
 
 fn routing_for(st: &State, s: &Session) -> Routing {
@@ -207,6 +241,7 @@ fn routing_for(st: &State, s: &Session) -> Routing {
         remote_dns: resolver::parse_dns_server(&st.settings.remote_dns, "1.1.1.1:53"),
         ip_rule_dns: st.settings.ip_rule_dns,
         remote_cache: s.remote_cache.clone(),
+        webrtc_guard: st.settings.webrtc_protection && s.mode == Mode::Tun,
     }
 }
 
@@ -406,8 +441,11 @@ impl Controller {
             logs,
             close_to_tray,
             smart_kick: AtomicBool::new(true),
+            check_kick: AtomicBool::new(false),
             app_update: std::sync::Mutex::new(None),
             tun_fd: std::sync::Mutex::new(None),
+            progress: std::sync::Mutex::new(Progress::default()),
+            health: std::sync::Mutex::new(Health { state: "unknown", ..Default::default() }),
             dir,
             // "TUN is possible": Android asks for the VPN permission, Linux grants a capability
             // to sing-box (one password prompt) — neither needs Mosaic itself to run as root.
@@ -552,6 +590,7 @@ impl Controller {
             system_proxy: s.map_or(false, |s| s.system_proxy),
             tun: s.map_or(false, |s| s.tun_up()),
             dns_protected: s.map_or(false, |s| s.dns_protected()),
+            health: if s.is_some() { self.health.lock().unwrap().clone() } else { Health { state: "unknown", ..Default::default() } },
         };
         let engine_infos = EngineKind::ALL
             .iter()
@@ -745,6 +784,11 @@ impl Controller {
             }
             s.hub.update(routing_for(&inner.state, s));
             self.logs.push(format!("[hub] active node → {name}"));
+            if manual {
+                // A new node: unconfirmed until the next check, which comes right away.
+                self.set_health("unknown", None, None);
+                self.check_kick.store(true, Relaxed);
+            }
         }
         Ok(())
     }
@@ -989,8 +1033,48 @@ impl Controller {
                 }
                 self.smart_tick(&settings, tick, &mut fails, &mut last_full).await;
             } else {
-                fails = 0;
                 last_full = None;
+                if tick % 2 == 0 || self.check_kick.swap(false, Relaxed) {
+                    self.health_tick(&settings, &mut fails).await;
+                }
+            }
+        }
+    }
+
+    /// Without Smart Connect: check the active node every 20 s and show when it stops
+    /// carrying traffic (two failures in a row), instead of a misleading "connected".
+    async fn health_tick(&self, settings: &Settings, fails: &mut u32) {
+        let port = {
+            let g = self.inner.lock().await;
+            let Some(s) = g.session.as_ref() else {
+                *fails = 0;
+                return;
+            };
+            g.state.selected.as_ref().and_then(|id| s.upstreams.get(id)).map(|u| u.port)
+        };
+        if !settings.test_url.starts_with("http://") {
+            return;
+        }
+        let Some(port) = port else {
+            self.set_health("degraded", None, Some("the selected node is not running".into()));
+            return;
+        };
+        match Self::probe_node(port, &settings.test_url).await {
+            Ok((ms, _)) => {
+                if *fails >= 2 {
+                    self.logs.push("[check] the node answers again");
+                }
+                *fails = 0;
+                self.set_health("ok", Some(ms), None);
+            }
+            Err(e) => {
+                *fails += 1;
+                if *fails == 2 {
+                    self.logs.push(format!("[check] the node stopped answering: {e}"));
+                }
+                if *fails >= 2 {
+                    self.set_health("degraded", None, Some(e));
+                }
             }
         }
     }
@@ -1014,8 +1098,14 @@ impl Controller {
                     Ok(ms) => {
                         *fails = 0;
                         current_ms = Some(ms);
+                        self.set_health("ok", Some(ms), None);
                     }
-                    Err(_) => *fails += 1,
+                    Err(e) => {
+                        *fails += 1;
+                        if *fails >= 2 {
+                            self.set_health("degraded", None, Some(e));
+                        }
+                    }
                 }
             } else {
                 *fails = 2;
@@ -1051,6 +1141,9 @@ impl Controller {
         let best = results.iter().filter_map(|(id, r)| r.as_ref().ok().map(|(ms, _)| (id.clone(), *ms))).min_by_key(|(_, ms)| *ms);
         let Some((best_id, best_ms)) = best else {
             self.logs.push("[smart] no node answered the test");
+            if *fails >= 2 {
+                self.set_health("degraded", None, Some("no node answers".into()));
+            }
             return;
         };
         let current = selected.as_ref().and_then(|id| results.iter().find(|(i, _)| i == id)).and_then(|(_, r)| r.as_ref().ok().map(|(ms, _)| *ms));
@@ -1062,7 +1155,10 @@ impl Controller {
         if switch && selected.as_deref() != Some(best_id.as_str()) {
             let name = upstreams.get(&best_id).map(|u| u.name.clone()).unwrap_or_default();
             match self.select_inner(&best_id, false).await {
-                Ok(()) => self.logs.push(format!("[smart] switched to {name} ({best_ms} ms)")),
+                Ok(()) => {
+                    self.logs.push(format!("[smart] switched to {name} ({best_ms} ms)"));
+                    self.set_health("ok", Some(best_ms), None);
+                }
                 Err(e) => self.logs.push(format!("[smart] {e}")),
             }
             *fails = 0;
@@ -1236,7 +1332,109 @@ impl Controller {
         Ok(p)
     }
 
+    /// Current connect step, without taking the controller lock.
+    pub fn progress(&self) -> Progress {
+        self.progress.lock().unwrap().clone()
+    }
+
+    fn step(&self, step: &'static str, detail: Option<String>) {
+        let mut p = self.progress.lock().unwrap();
+        if p.step.is_none() {
+            p.since_ms = now_ms();
+        }
+        p.step = Some(step);
+        p.detail = detail;
+    }
+
+    fn set_health(&self, state: &'static str, ms: Option<u32>, error: Option<String>) {
+        *self.health.lock().unwrap() = Health { state, error, checked_ms: now_ms(), ms };
+    }
+
+    /// One node through its engine, with a hard limit and one retry.
+    async fn probe_node(port: u16, url: &str) -> Result<(u32, Option<u32>), String> {
+        let mut last = String::new();
+        for _ in 0..2 {
+            match tokio::time::timeout(Duration::from_secs(6), hub::url_probe(port, url)).await {
+                Ok(Ok(r)) => return Ok(r),
+                Ok(Err(e)) => last = e,
+                Err(_) => last = "no answer within 6 s".into(),
+            }
+        }
+        Err(last)
+    }
+
+    /// Before the system is switched over (system proxy / TUN): does the selected node
+    /// actually carry traffic? If not, and Smart Connect is on, take the fastest node that
+    /// answers. Otherwise refuse: a "connected" VPN through a dead server only misleads.
+    /// Errors start with a tag the UI recognises: `[node-down] name :: detail` or `[no-node]`.
+    async fn check_before_switch(&self, st: &mut State, latency: &mut HashMap<String, Latency>, s: &Session) -> Result<(), String> {
+        let url = st.settings.test_url.clone();
+        if !url.starts_with("http://") {
+            self.logs.push("[check] skipped: the latency test URL is not http://");
+            return Ok(());
+        }
+        let selected = st.selected.clone().unwrap_or_default();
+        let name = s.upstreams.get(&selected).map(|u| u.name.clone()).unwrap_or_else(|| selected.clone());
+        self.step("check", Some(name.clone()));
+        let first = match s.upstreams.get(&selected) {
+            Some(u) => Self::probe_node(u.port, &url).await,
+            None => Err("its engine did not start".into()),
+        };
+        let now = now_ms();
+        let record = |latency: &mut HashMap<String, Latency>, id: &str, r: &Result<(u32, Option<u32>), String>| {
+            let l = match r {
+                Ok((ms, rtt)) => Latency { ms: Some(*ms), rtt: *rtt, error: None, at_ms: now },
+                Err(e) => Latency { ms: None, rtt: None, error: Some(e.clone()), at_ms: now },
+            };
+            latency.insert(id.to_string(), l);
+        };
+        record(latency, &selected, &first);
+        let err = match first {
+            Ok((ms, _)) => {
+                self.logs.push(format!("[check] {name} answers ({ms} ms)"));
+                self.set_health("ok", Some(ms), None);
+                return Ok(());
+            }
+            Err(e) => e,
+        };
+        self.logs.push(format!("[check] {name} is not responding: {err}"));
+        if !st.settings.smart_connect {
+            return Err(format!("[node-down] {name} :: {err}"));
+        }
+        self.step("check", Some("*".into()));
+        let mut set = JoinSet::new();
+        for (id, u) in &s.upstreams {
+            if *id == selected {
+                continue;
+            }
+            let (id, port, url) = (id.clone(), u.port, url.clone());
+            set.spawn(async move { (id, Self::probe_node(port, &url).await) });
+        }
+        let mut best: Option<(String, u32)> = None;
+        while let Some(r) = set.join_next().await {
+            let Ok((id, r)) = r else { continue };
+            record(latency, &id, &r);
+            if let Ok((ms, _)) = r {
+                if best.as_ref().map_or(true, |(_, b)| ms < *b) {
+                    best = Some((id, ms));
+                }
+            }
+        }
+        let Some((id, ms)) = best else {
+            return Err(format!("[no-node] {name} :: {err}"));
+        };
+        let new_name = s.upstreams.get(&id).map(|u| u.name.clone()).unwrap_or_default();
+        st.selected = Some(id);
+        self.save(st);
+        s.hub.update(routing_for(st, s));
+        self.logs.push(format!("[smart] {name} is not responding — switched to {new_name} ({ms} ms)"));
+        self.set_health("ok", Some(ms), None);
+        Ok(())
+    }
+
     pub async fn connect(&self) -> Result<(), String> {
+        let _done = ProgressDone(self);
+        self.step("prepare", None);
         let mut g = self.inner.lock().await;
         if g.session.is_some() {
             return Ok(());
@@ -1289,8 +1487,8 @@ impl Controller {
         server_ips.push(resolver::parse_dns_server(&settings.direct_dns, "8.8.8.8:53").ip());
         server_ips.sort();
         server_ips.dedup();
+        self.step("engines", None);
         let (engine_procs, upstreams) = self.start_engines(&engine_nodes).await?;
-        let selected = g.state.selected.clone();
         let direct_port = if tun && settings.tun_stack == TunStack::Singbox {
             match process::alloc_ports(1) {
                 Ok(p) => Some(p[0]),
@@ -1347,11 +1545,16 @@ impl Controller {
         };
         let mut s = draft;
         s.hub.update(routing_for(&g.state, &s));
-        if let Some(id) = &selected {
-            if !s.upstreams.contains_key(id) {
-                self.logs.push("[hub] the selected node did not start — 'proxy' traffic will be blocked");
+        // The node is checked through its engine while the system is still untouched:
+        // a dead node costs the user nothing, not even a moment without internet.
+        {
+            let inner = &mut *g;
+            if let Err(e) = self.check_before_switch(&mut inner.state, &mut inner.latency, &s).await {
+                self.teardown(s).await;
+                return Err(e);
             }
         }
+        self.step("route", None);
         let res: Result<(), String> = match (settings.mode, settings.tun_stack) {
             (Mode::SystemProxy, _) => match sys::set_system_proxy(settings.listen_port) {
                 Ok(true) => {
@@ -1400,6 +1603,7 @@ impl Controller {
         // DNS does not go through the tunnel with it, there is no connection — a VPN that
         // silently leaks DNS is worse than one that refuses to connect.
         if tun && settings.dns_leak_protection {
+            self.step("dns", None);
             let checked = match self.protect_dns(&mut s) {
                 Ok(()) => self.check_tunnel_dns().await,
                 Err(e) => Err(e),
@@ -1564,6 +1768,7 @@ impl Controller {
             self.teardown(s).await;
             self.logs.push("[hub] disconnected");
         }
+        self.set_health("unknown", None, None);
         if g.state.proxy_dirty {
             g.state.proxy_dirty = false;
             self.save(&g.state);

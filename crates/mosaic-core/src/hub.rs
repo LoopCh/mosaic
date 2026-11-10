@@ -68,6 +68,8 @@ pub struct Routing {
     pub remote_dns: SocketAddr,
     pub ip_rule_dns: IpRuleDns,
     pub remote_cache: Arc<DnsCache>,
+    /// See `Settings::webrtc_protection`.
+    pub webrtc_guard: bool,
 }
 
 pub type SharedRouting = Arc<RwLock<Arc<Routing>>>;
@@ -87,7 +89,24 @@ impl Routing {
             remote_dns: "1.1.1.1:53".parse().unwrap(),
             ip_rule_dns: IpRuleDns::Remote,
             remote_cache: Arc::new(DnsCache::default()),
+            webrtc_guard: false,
         }
+    }
+
+    /// WebRTC leak protection: a STUN request ("what is my address?") that a rule would
+    /// send direct goes through the active node instead (or is blocked if there is none),
+    /// so pages cannot learn the real IP. Calls themselves keep working through the node.
+    /// Checks between devices of the local network stay local.
+    pub fn guard_udp(&self, decided: (Decision, String), host: &str, payload: &[u8]) -> (Decision, String) {
+        let local = match host.parse::<IpAddr>() {
+            Ok(IpAddr::V4(v4)) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64),
+            Ok(IpAddr::V6(v6)) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
+            Err(_) => host.ends_with(".local"),
+        };
+        if self.webrtc_guard && !local && matches!(decided.0, Decision::Direct) && crate::sniff::is_stun(payload) {
+            return (self.target("proxy"), "WebRTC protection".into());
+        }
+        decided
     }
 
     /// Raw DNS exchange through the active node (the query ID is preserved).

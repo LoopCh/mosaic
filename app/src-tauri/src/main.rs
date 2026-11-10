@@ -146,6 +146,11 @@ async fn test_latency(ctl: Ctl<'_>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn progress(ctl: Ctl<'_>) -> mosaic_core::controller::Progress {
+    ctl.progress()
+}
+
+#[tauri::command]
 async fn connections(ctl: Ctl<'_>) -> Result<Vec<ConnView>, String> {
     Ok(ctl.connections())
 }
@@ -171,6 +176,7 @@ struct Labels {
     quit: &'static str,
     on: &'static str,
     off: &'static str,
+    weak: &'static str,
 }
 
 fn labels(ui_language: &str) -> Labels {
@@ -180,9 +186,9 @@ fn labels(ui_language: &str) -> Labels {
         _ => mosaic_core::sys::ui_lang_is_ru(),
     };
     if ru {
-        Labels { auto: "Авто (самый быстрый)", open: "Открыть Mosaic", connect: "Подключить", disconnect: "Отключить", nodes: "Узлы", quit: "Выход", on: "подключено", off: "отключено" }
+        Labels { auto: "Авто (самый быстрый)", open: "Открыть Mosaic", connect: "Подключить", disconnect: "Отключить", nodes: "Узлы", quit: "Выход", on: "подключено", off: "отключено", weak: "сервер не отвечает" }
     } else {
-        Labels { auto: "Auto (fastest)", open: "Open Mosaic", connect: "Connect", disconnect: "Disconnect", nodes: "Nodes", quit: "Quit", on: "connected", off: "disconnected" }
+        Labels { auto: "Auto (fastest)", open: "Open Mosaic", connect: "Connect", disconnect: "Disconnect", nodes: "Nodes", quit: "Quit", on: "connected", off: "disconnected", weak: "the server does not answer" }
     }
 }
 
@@ -222,9 +228,50 @@ fn build_menu(app: &AppHandle, snap: &Snapshot) -> tauri::Result<Menu<Wry>> {
     Ok(menu)
 }
 
-/// Update tooltip; rebuild the menu only when something it shows changed.
+/// Tray and window (taskbar) icon by state: grey — off, amber — connecting or the node
+/// does not answer, colour — connected.
+#[derive(Clone, Copy, PartialEq)]
+enum IconState {
+    Off = 1,
+    Busy = 2,
+    On = 3,
+}
+
+static ICON_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn set_state_icon(app: &AppHandle, st: IconState) {
+    if ICON_STATE.swap(st as u8, Relaxed) == st as u8 {
+        return;
+    }
+    let rgba: &'static [u8] = match st {
+        IconState::Off => include_bytes!("../icons/state/off-64.rgba"),
+        IconState::Busy => include_bytes!("../icons/state/busy-64.rgba"),
+        IconState::On => include_bytes!("../icons/state/on-64.rgba"),
+    };
+    let img = tauri::image::Image::new(rgba, 64, 64);
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_icon(Some(img.clone()));
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_icon(img);
+    }
+}
+
+/// Update icon and tooltip; rebuild the menu only when something it shows changed.
 async fn refresh_tray(app: &AppHandle, ctl: &Controller, last: &str) -> String {
+    // Connect holds the controller while it works: show "busy" before waiting for it.
+    if ctl.progress().step.is_some() {
+        set_state_icon(app, IconState::Busy);
+    }
     let snap = ctl.snapshot().await;
+    set_state_icon(
+        app,
+        match (snap.status.connected, snap.status.health.state) {
+            (false, _) => IconState::Off,
+            (true, "degraded") => IconState::Busy,
+            (true, _) => IconState::On,
+        },
+    );
     let selected = snap.selected.clone().unwrap_or_default();
     let sel_name = snap.nodes.iter().find(|n| n.node.id == selected).map(|n| n.node.name.clone()).unwrap_or_default();
     let sig = format!(
@@ -237,7 +284,11 @@ async fn refresh_tray(app: &AppHandle, ctl: &Controller, last: &str) -> String {
     );
     if let Some(tray) = app.tray_by_id("main") {
         let l = labels(&snap.settings.ui_language);
-        let state = if snap.status.connected { l.on } else { l.off };
+        let state = match (snap.status.connected, snap.status.health.state) {
+            (false, _) => l.off,
+            (true, "degraded") => l.weak,
+            (true, _) => l.on,
+        };
         let mut tip = format!("Mosaic — {state}");
         if !sel_name.is_empty() {
             tip.push_str(" · ");
@@ -304,6 +355,7 @@ fn main() {
         .manage(ctl)
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            progress,
             connect,
             disconnect,
             import_text,
@@ -336,7 +388,7 @@ fn main() {
             if !std::env::args().any(|a| a == "--minimized") {
                 show_main(&handle);
             }
-            let icon = app.default_window_icon().cloned().ok_or("the app has no icon")?;
+            let icon = tauri::image::Image::new(include_bytes!("../icons/state/off-64.rgba"), 64, 64);
             TrayIconBuilder::with_id("main")
                 .icon(icon)
                 .tooltip("Mosaic")
@@ -353,6 +405,7 @@ fn main() {
             tauri::async_runtime::spawn(ctl.clone().run_background());
             tauri::async_runtime::spawn(async move {
                 if ctl.settings().await.auto_connect {
+                    set_state_icon(&handle, IconState::Busy);
                     ctl.prepare_startup().await;
                     if let Err(e) = ctl.connect().await {
                         ctl.logs.push(format!("[app] auto-connect failed: {e}"));
@@ -362,7 +415,7 @@ fn main() {
                 let mut last = String::new();
                 loop {
                     last = refresh_tray(&handle, &ctl, &last).await;
-                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    tokio::time::sleep(Duration::from_millis(700)).await;
                 }
             });
             Ok(())

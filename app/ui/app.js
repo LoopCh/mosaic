@@ -104,7 +104,6 @@ function avatar(name) {
 // ------------------------------------------------------------------ state
 let snap = null;
 let view = 'home';
-let connecting = false;
 let rulesDraft = null;
 let nodesKey = '';
 const traffic = { up: [], down: [] };
@@ -195,6 +194,133 @@ function selectedNode() {
   return snap && snap.nodes.find((n) => n.id === snap.selected);
 }
 
+// One state for the whole UI, so what the user sees always matches what happens:
+//   off · connecting · reloading · disconnecting · on · degraded · error
+const op = { kind: null, started: 0, progress: null, error: null };
+function phase() {
+  if (!snap) return 'off';
+  if (op.kind) return op.kind;
+  if (snap.status.connected) return snap.status.health && snap.status.health.state === 'degraded' ? 'degraded' : 'on';
+  return op.error ? 'error' : 'off';
+}
+const busy = () => !!op.kind;
+const fmtSecs = (s) => (lang === 'ru' ? s.toFixed(1).replace('.', ',') + ' с' : s.toFixed(1) + ' s');
+
+let progressTimer = null;
+function watchProgress() {
+  clearInterval(progressTimer);
+  progressTimer = setInterval(async () => {
+    if (!op.kind) { clearInterval(progressTimer); return; }
+    try { op.progress = await invoke('progress'); } catch { return; }
+    renderHero();
+  }, 250);
+}
+
+/// Run a connect / disconnect / reconnect with the UI showing every step of it.
+async function runOp(kind, fn) {
+  if (op.kind) return { err: 'busy', secs: 0 };
+  Object.assign(op, { kind, started: performance.now(), progress: null, error: null });
+  if (kind !== 'disconnecting') watchProgress();
+  renderLive();
+  let err = null;
+  try { await fn(); } catch (e) { err = String(e); }
+  const secs = (performance.now() - op.started) / 1000;
+  op.kind = null; op.progress = null;
+  try { snap = await invoke('snapshot'); } catch { /* next poll */ }
+  if (err && kind !== 'disconnecting') op.error = err;
+  renderLive();
+  return { err, secs };
+}
+
+async function connectNow() {
+  if (!snap || busy()) return;
+  if (!snap.nodes.length) { show('nodes'); $('#import-panel').classList.remove('hidden'); return; }
+  const r = await runOp('connecting', () => invoke('connect'));
+  if (!r.err) { mosaicBurst(); if (view !== 'home') toast(t('toast.connectedIn', fmtSecs(r.secs)), 'ok', 2500); }
+  else if (view !== 'home') toast(errorText(parseError(r.err)).title, 'error');
+}
+async function disconnectNow() {
+  if (!snap || busy()) return;
+  op.error = null;
+  await runOp('disconnecting', () => invoke('disconnect'));
+}
+
+// Settings that make the backend reconnect (mirrors Controller::set_settings).
+function needsRestart(a, b) {
+  if (!snap.status.connected) return false;
+  if (isAndroid()) return true; // the VPN service reconnects on every change
+  return a.mode !== b.mode || a.listen_port !== b.listen_port || a.block_quic !== b.block_quic || a.tun_stack !== b.tun_stack
+    || a.direct_dns !== b.direct_dns || a.dns_leak_protection !== b.dns_leak_protection || a.allow_lan !== b.allow_lan
+    || (b.mode === 'tun' && b.tun_stack === 'singbox' && a.remote_dns !== b.remote_dns);
+}
+
+/// Save settings. A change that needs a reconnect shows it (mosaic reshuffles, steps,
+/// "applied · reconnected in 1.4 s"); one that applies live says so.
+async function applyChange(settings, label) {
+  if (needsRestart(snap.settings, settings)) return reloadAround(() => invoke('set_settings', { settings }), label);
+  try {
+    await invoke('set_settings', { settings });
+    snap = await invoke('snapshot');
+    toast(snap.status.connected ? t('toast.appliedLive', label) : t('settings.saved'), 'ok', 2200);
+  } catch (e) { toast(e, 'error'); snap = await invoke('snapshot').catch(() => snap); }
+  renderLive();
+}
+
+async function reloadAround(fn, label) {
+  if (!snap.status.connected) {
+    try { await fn(); toast(t('settings.saved'), 'ok', 2000); } catch (e) { toast(e, 'error'); }
+    snap = await invoke('snapshot').catch(() => snap);
+    renderLive();
+    return;
+  }
+  const r = await runOp('reloading', fn);
+  if (r.err) toast(t('toast.reloadFailed', errorText(parseError(r.err)).title), 'error', 6000);
+  else { mosaicBurst(); toast(t('toast.reloaded', label, fmtSecs(r.secs)), 'ok', 3000); }
+}
+
+function parseError(e) {
+  let m = /^\[node-down\] (.*?) :: ([\s\S]*)$/.exec(e);
+  if (m) return { kind: 'node', name: m[1], detail: m[2] };
+  m = /^\[no-node\] (.*?) :: ([\s\S]*)$/.exec(e);
+  if (m) return { kind: 'none', name: m[1], detail: m[2] };
+  return { kind: 'other', detail: e };
+}
+function errorText(p) {
+  if (p.kind === 'node') return { title: t('err.nodeDown.t'), sub: t('err.nodeDown.d', p.name) };
+  if (p.kind === 'none') return { title: t('err.noNode.t'), sub: t('err.noNode.d') };
+  return { title: t('err.other.t'), sub: p.detail };
+}
+
+// ---- the mosaic: 4×4 tiles that assemble while connecting
+const MOSAIC_ORDER = [5, 10, 0, 15, 6, 9, 3, 12, 1, 14, 4, 11, 2, 13, 7, 8]; // tiles light up in this order
+const STEP_LIT = { prepare: 2, engines: 6, check: 10, route: 13, dns: 15 };
+(function buildMosaic() {
+  const rnd = (i, k) => ((Math.sin(i * 12.9898 + k * 78.233) * 43758.5453) % 1 + 1) % 1; // stable per tile
+  $('#mosaic').innerHTML = Array.from({ length: 16 }, (_, i) => {
+    const r = i >> 2, c = i & 3, q = (r >> 1) * 2 + (c >> 1);
+    const dist = Math.hypot(r - 1.5, c - 1.5).toFixed(2);
+    return `<i style="--q:var(--q${q});--g:var(--g${q});--d:${r + c};--r:${dist};--sx:${(rnd(i, 1) * 10 - 5).toFixed(1)}px;--sy:${(rnd(i, 2) * 10 - 5).toFixed(1)}px;--sr:${(rnd(i, 3) * 24 - 12).toFixed(0)}deg"></i>`;
+  }).join('');
+})();
+function renderMosaic(ph) {
+  const m = $('#mosaic');
+  const step = op.progress && op.progress.step;
+  const lit = ph === 'on' || ph === 'degraded' ? 16 : (ph === 'connecting' || ph === 'reloading') ? (STEP_LIT[step] || 1) : 0;
+  const tiles = m.children;
+  MOSAIC_ORDER.forEach((idx, k) => tiles[idx].classList.toggle('lit', k < lit));
+  // Live traffic makes the connected mosaic glow brighter.
+  const rate = (traffic.down.at(-1) || 0) + (traffic.up.at(-1) || 0);
+  m.style.setProperty('--act', Math.min(1, Math.log10(rate + 1) / 7).toFixed(2));
+  m.disabled = busy();
+  m.title = ph === 'on' || ph === 'degraded' ? t('hero.disconnect') : t('hero.connect');
+}
+function mosaicBurst() {
+  const m = $('#mosaic');
+  m.classList.remove('burst'); void m.offsetWidth; m.classList.add('burst');
+  setTimeout(() => m.classList.remove('burst'), 1100);
+}
+
+// ---- status in the sidebar and on Home
 function renderStatus(sample) {
   const st = snap.status;
   if (sample) {
@@ -207,29 +333,119 @@ function renderStatus(sample) {
     }
     last = { t: now, up: st.up, down: st.down };
   }
-  $('#side-dot').className = 'dot' + (connecting ? ' busy' : st.connected ? ' on' : '');
-  $('#side-status').textContent = connecting ? t('status.busy') : st.connected ? t('status.on') : t('status.off');
+  const ph = phase();
+  const dot = { on: ' on', degraded: ' warn', connecting: ' busy', reloading: ' busy', disconnecting: ' busy', error: ' err' }[ph] || '';
+  $('#side-dot').className = 'dot' + dot;
+  $('#side-status').textContent = t('phase.' + ph);
   const sel = selectedNode();
   $('#side-sub').textContent = st.connected && sel ? sel.name : 'Mosaic ' + (snap.version || '');
 }
 
+function renderLive() {
+  if (!snap) return;
+  renderStatus(false);
+  if (view === 'home') renderHome();
+}
+
+function viaText(st) {
+  return st.tun && isAndroid() ? t('hero.viaVpn')
+    : st.tun
+    ? (st.tun_stack === 'native' ? t('hero.viaTunNative') : t('hero.viaTun')) + (snap.platform === 'windows' ? ' · ' + (st.dns_protected ? t('hero.dnsOk') : t('hero.dnsOff')) : '')
+    : st.system_proxy ? t('hero.viaProxy', st.listen_port)
+    : t('hero.viaPort', (st.lan ? (snap.lan_ip || t('hero.lanAddr')) : '127.0.0.1') + ':' + st.listen_port);
+}
+
+function stepItems() {
+  const p = op.progress || {};
+  const mode = uiMode();
+  const items = [['engines', t('step.engines')]];
+  const n = selectedNode();
+  items.push(['check', p.step === 'check' && p.detail === '*' ? t('step.search') : t('step.check', (p.step === 'check' && p.detail) || (n ? n.name : ''))]);
+  items.push(['route', t('step.route.' + (mode === 'tun' ? 'tun' : mode === 'proxy' ? 'proxy' : 'system'))]);
+  if (mode === 'tun' && snap.platform === 'windows' && snap.settings.dns_leak_protection) items.push(['dns', t('step.dns')]);
+  const order = ['prepare', 'engines', 'check', 'route', 'dns'];
+  const cur = order.indexOf(p.step || 'prepare');
+  return items.map(([k, label]) => {
+    const i = order.indexOf(k);
+    const cls = i < cur ? 'done' : i === cur ? 'active' : '';
+    return `<li class="${cls}"><span class="st-dot"></span>${esc(label)}</li>`;
+  }).join('');
+}
+
+function renderHero() {
+  if (!snap) return;
+  const ph = phase();
+  const st = snap.status;
+  const hero = $('#hero');
+  hero.dataset.phase = ph;
+  renderMosaic(ph);
+  const n = selectedNode();
+  let title = t('phase.' + ph), sub = '', actions = '', meta = '';
+  const btn = (act, label, cls = '') => `<button class="btn ${cls}" data-hero="${act}">${esc(label)}</button>`;
+  if (ph === 'off') {
+    sub = snap.nodes.length ? (n ? t('hero.ready', n.name) : t('hero.click')) : t('hero.addNode');
+    actions = snap.nodes.length ? btn('connect', t('hero.connect'), 'primary big') : btn('add', t('home.add'), 'primary big');
+  } else if (ph === 'connecting' || ph === 'reloading' || ph === 'disconnecting') {
+    sub = ph === 'reloading' ? t('hero.applying') : ph === 'connecting' && n ? n.name : '';
+    if (ph !== 'disconnecting') {
+      const el = $('#steps');
+      el.innerHTML = stepItems();
+    }
+  } else if (ph === 'on') {
+    sub = viaText(st);
+    actions = btn('disconnect', t('hero.disconnect'), 'ghost big');
+    const h = st.health || {};
+    meta = [st.since_ms ? t('home.online', fmtDur(Date.now() - st.since_ms)) : '', h.ms != null ? t('hero.answers', h.ms) : ''].filter(Boolean).join(' · ');
+  } else if (ph === 'degraded') {
+    sub = t('hero.degraded', n ? n.name : '');
+    actions = btn('pick', t('hero.pick'), 'primary') + (snap.settings.smart_connect ? '' : btn('smart', t('hero.smartOn'))) + btn('disconnect', t('hero.disconnect'), 'ghost');
+    meta = viaText(st);
+  } else if (ph === 'error') {
+    const p = parseError(op.error);
+    const e = errorText(p);
+    title = e.title; sub = e.sub;
+    if (p.kind === 'node') {
+      actions = btn('pick', t('hero.pickOther'), 'primary') + btn('smart-connect', t('hero.smartConnect')) + btn('connect', t('hero.retry'), 'ghost');
+      meta = t('err.detail', p.detail);
+    } else if (p.kind === 'none') {
+      actions = btn('connect', t('hero.retry'), 'primary') + btn('subs', t('nodes.updateSubs')) + btn('logs', t('nav.logs'), 'ghost');
+      meta = t('err.detail', p.detail);
+    } else {
+      actions = btn('connect', t('hero.retry'), 'primary') + btn('logs', t('nav.logs'), 'ghost');
+    }
+  }
+  $('#hero-state').textContent = title;
+  $('#hero-sub').textContent = sub;
+  $('#steps').classList.toggle('hidden', !(ph === 'connecting' || ph === 'reloading'));
+  const acts = $('#hero-actions');
+  if (acts.dataset.key !== ph + actions) { acts.innerHTML = actions; acts.dataset.key = ph + actions; }
+  $('#hero-meta').textContent = meta;
+}
+
+$('#hero-actions').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-hero]');
+  if (!b) return;
+  switch (b.dataset.hero) {
+    case 'connect': return connectNow();
+    case 'disconnect': return disconnectNow();
+    case 'add': show('nodes'); $('#import-panel').classList.remove('hidden'); return;
+    case 'pick': return nodeSheet();
+    case 'smart': await invoke('set_smart', { on: true }); snap = await invoke('snapshot'); toast(t('smart.on'), 'ok', 3000); return renderLive();
+    case 'smart-connect': await invoke('set_smart', { on: true }); snap = await invoke('snapshot'); return connectNow();
+    case 'subs': return withBusy(b, async () => { await invoke('update_subscriptions'); snap = await invoke('snapshot'); toast(t('settings.saved'), 'ok', 2000); });
+    case 'logs': return show('logs');
+  }
+});
+$('#mosaic').addEventListener('click', () => {
+  const ph = phase();
+  if (ph === 'on' || ph === 'degraded') disconnectNow(); else if (ph === 'off' || ph === 'error') connectNow();
+});
+
 function renderHome() {
   const st = snap.status;
-  const power = $('#power');
-  power.classList.toggle('on', st.connected && !connecting);
-  power.classList.toggle('busy', connecting);
-  $('#hero-state').textContent = connecting ? t('status.busy') : st.connected ? t('status.on') : t('status.off');
-  if (st.connected) {
-    $('#hero-sub').textContent = st.tun && isAndroid() ? t('hero.viaVpn')
-      : st.tun
-      ? (st.tun_stack === 'native' ? t('hero.viaTunNative') : t('hero.viaTun')) + (snap.platform === 'windows' ? ' · ' + (st.dns_protected ? t('hero.dnsOk') : t('hero.dnsOff')) : '')
-      : st.system_proxy ? t('hero.viaProxy', st.listen_port)
-      : t('hero.viaPort', (st.lan ? (snap.lan_ip || t('hero.lanAddr')) : '127.0.0.1') + ':' + st.listen_port);
-  } else {
-    $('#hero-sub').textContent = snap.nodes.length ? t('hero.click') : t('hero.addNode');
-  }
+  renderHero();
   const mode = uiMode();
-  $$('#mode-seg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+  $$('#mode-seg button').forEach((b) => { b.classList.toggle('active', b.dataset.mode === mode); b.disabled = busy(); });
   const port = snap.settings.listen_port;
   $('#mode-hint').textContent = mode === 'tun' && isAndroid() ? t('hint.vpn')
     : mode === 'tun'
@@ -239,19 +455,19 @@ function renderHome() {
 
   const n = selectedNode();
   const card = $('#current-node');
-  if (n) {
-    const lat = latHtml(n, false);
-    card.innerHTML = `
-      <div class="flag">${esc(avatar(n.name))}</div>
-      <div class="grow"><div class="title">${esc(n.name)}</div>
-      <div class="sub">${esc(n.summary)} · ${esc(n.server)}:${n.port}</div></div>
-      ${snap.settings.smart_connect ? `<span class="badge auto">${t('smart.badge')}</span>` : ''}${engineBadge(n.effective)}
-      <span class="lat ${latClass(n)}" title="${esc(latTip(n))}">${lat}</span>
-      <button class="btn" id="go-nodes">${t('home.change')}</button>`;
-    $('#go-nodes').onclick = () => show('nodes');
-  } else {
-    card.innerHTML = `<div class="grow"><div class="title">${t('home.noNodes')}</div><div class="sub">${t('home.importHint')}</div></div><button class="btn primary" id="go-nodes">${t('home.add')}</button>`;
-    $('#go-nodes').onclick = () => { show('nodes'); $('#import-panel').classList.remove('hidden'); };
+  const key = JSON.stringify([lang, n && [n.id, n.name, n.latency, n.effective], snap.settings.smart_connect, snap.nodes.length]);
+  if (card.dataset.key !== key) {
+    card.dataset.key = key;
+    if (n) {
+      card.innerHTML = `
+        <div class="flag">${esc(avatar(n.name))}</div>
+        <div class="grow"><div class="title">${esc(n.name)}</div>
+        <div class="sub">${snap.settings.smart_connect ? `<span class="badge auto">${t('smart.badge')}</span> ` : ''}${esc(n.summary)} · ${engineBadge(n.effective)}</div></div>
+        <span class="lat ${latClass(n)}" title="${esc(latTip(n))}">${latHtml(n, false)}</span>
+        <span class="chev">${t('home.change')} ▾</span>`;
+    } else {
+      card.innerHTML = `<div class="grow"><div class="title">${t('home.noNodes')}</div><div class="sub">${t('home.importHint')}</div></div><span class="chev">${t('home.add')} ＋</span>`;
+    }
   }
 
   const up = traffic.up.at(-1) || 0, down = traffic.down.at(-1) || 0;
@@ -263,6 +479,11 @@ function renderHome() {
   $('#uptime').textContent = st.connected && st.since_ms ? t('home.online', fmtDur(Date.now() - st.since_ms)) : '—';
   drawSpark();
 }
+$('#current-node').addEventListener('click', () => {
+  if (!snap) return;
+  if (!snap.nodes.length) { show('nodes'); $('#import-panel').classList.remove('hidden'); return; }
+  nodeSheet();
+});
 
 function drawSpark() {
   const c = $('#spark');
@@ -289,28 +510,70 @@ function drawSpark() {
   g.fillText(fmtRate(max / 1.15), 6, 14);
 }
 
-$('#power').addEventListener('click', async () => {
-  if (connecting || !snap) return;
-  connecting = true;
-  renderHome(); renderStatus(false);
-  try {
-    if (snap.status.connected) await invoke('disconnect');
-    else { await invoke('connect'); toast(t('toast.connected'), 'ok', 2500); }
-  } catch (e) { toast(e, 'error'); }
-  connecting = false;
-  try { snap = await invoke('snapshot'); } catch (e) { /* next poll */ }
-  renderStatus(false); renderHome();
-});
-
 $$('#mode-seg button').forEach((b) => b.addEventListener('click', async () => {
-  if (!snap || uiMode() === b.dataset.mode) return;
+  if (!snap || busy() || uiMode() === b.dataset.mode) return;
   if (b.dataset.mode === 'tun' && !snap.is_admin) toast(t('toast.tunNeedsAdmin'), 'info', 7000);
-  const s = { ...snap.settings, mode: b.dataset.mode };
-  connecting = snap.status.connected;
-  try { await invoke('set_settings', { settings: s }); } catch (e) { toast(e, 'error'); }
-  connecting = false;
-  snap = await invoke('snapshot'); renderHome(); renderStatus(false);
+  await applyChange({ ...snap.settings, mode: b.dataset.mode }, t('toast.modeLabel', b.textContent));
 }));
+
+// ---- quick node switch (a sheet on phones, a dialog on desktops)
+function nodeSheet() {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-wrap sheet-wrap';
+  wrap.innerHTML = `<div class="modal card node-sheet" role="dialog" aria-modal="true">
+    <div class="ns-head"><h3>${t('sheet.title')}</h3><button class="btn" data-a="test">${t('nodes.test')}</button><button class="icon-btn" data-a="close" aria-label="${t('dlg.cancel')}">×</button></div>
+    <input class="ns-filter" placeholder="${esc(t('nodes.filterPh'))}" />
+    <label class="ns-auto"><span class="ns-auto-text"><b>${t('sheet.auto')}</b><span class="muted small">${t('sheet.autoD')}</span></span>
+      <span class="switch"><input type="checkbox" class="ns-smart" ${snap.settings.smart_connect ? 'checked' : ''} /><span></span></span></label>
+    <div class="ns-list"></div>
+  </div>`;
+  const list = $('.ns-list', wrap);
+  const subName = (src) => { const s = snap.subscriptions.find((x) => x.url === src); return s ? (s.name || s.url) : t('subs.manual'); };
+  const draw = () => {
+    const f = $('.ns-filter', wrap).value.trim().toLowerCase();
+    const nodes = snap.nodes.filter((n) => !f || `${n.name} ${n.summary} ${n.server}`.toLowerCase().includes(f))
+      .sort((a, b) => latencyKey(a) - latencyKey(b));
+    list.innerHTML = nodes.map((n) => `<button class="ns-row ${n.id === snap.selected ? 'sel' : ''}" data-id="${esc(n.id)}">
+        <span class="flag">${esc(avatar(n.name))}</span>
+        <span class="ns-main"><span class="ns-name">${esc(n.name)}</span><span class="muted small">${esc(n.summary)} · ${esc(subName(n.source))}</span></span>
+        <span class="lat ${latClass(n)}" title="${esc(latTip(n))}">${latHtml(n, false)}</span></button>`).join('')
+      || `<div class="empty">${t('nodes.nothing')}</div>`;
+  };
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  $('.ns-filter', wrap).addEventListener('input', draw);
+  $('.ns-smart', wrap).addEventListener('change', async (e) => {
+    await invoke('set_smart', { on: e.target.checked });
+    snap = await invoke('snapshot');
+    toast(e.target.checked ? t('smart.on') : t('toast.smartOff'), 'ok', 2500);
+    draw(); renderLive();
+  });
+  wrap.addEventListener('click', async (e) => {
+    if (e.target === wrap || e.target.closest('[data-a="close"]')) return close();
+    const test = e.target.closest('[data-a="test"]');
+    if (test) {
+      return withBusy(test, async () => { await invoke('test_latency'); snap = await invoke('snapshot'); draw(); });
+    }
+    const row = e.target.closest('.ns-row');
+    if (!row) return;
+    const id = row.dataset.id;
+    const n = snap.nodes.find((x) => x.id === id);
+    close();
+    if (id === snap.selected && !snap.settings.smart_connect) return;
+    try {
+      await invoke('select_node', { id });
+      snap = await invoke('snapshot');
+      nodesKey = '';
+      toast(snap.status.connected ? t('toast.nodeLive', n.name) : t('toast.nodeSet', n.name), 'ok', 2500);
+      if (op.error && !snap.status.connected) { op.error = null; }
+    } catch (err) { toast(err, 'error'); }
+    renderLive();
+  });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(wrap);
+  draw();
+  if (!isAndroid()) $('.ns-filter', wrap).focus();
+}
 
 // ------------------------------------------------------------------ nodes
 function latClass(n) {
@@ -479,11 +742,12 @@ function renderNodes() {
       if (e.target.closest('select, button')) return;
       withBusy(null, async () => { await invoke('select_node', { id }); snap = await invoke('snapshot'); nodesKey = ''; renderNodes(); });
     });
-    $('.engine-sel', row).addEventListener('change', (e) => withBusy(null, async () => {
-      await invoke('set_node_engine', { id, engine: e.target.value });
-      snap = await invoke('snapshot'); nodesKey = ''; renderNodes();
-      toast(t('nodes.engineChanged'), 'ok', 2000);
-    }));
+    $('.engine-sel', row).addEventListener('change', async (e) => {
+      const engine = e.target.value;
+      const name = (snap.nodes.find((x) => x.id === id) || {}).name || '';
+      await reloadAround(() => invoke('set_node_engine', { id, engine }), t('nodes.engineFor', name));
+      nodesKey = ''; renderNodes();
+    });
     $('.del', row).addEventListener('click', () => withBusy(null, async () => {
       await invoke('remove_node', { id });
       snap = await invoke('snapshot'); nodesKey = ''; renderNodes();
@@ -973,6 +1237,7 @@ function renderSettings() {
   $('#set-lang').value = s.ui_language || 'auto';
   $('#set-port').value = s.listen_port;
   $('#set-quic').checked = s.block_quic;
+  $('#set-webrtc').checked = s.webrtc_protection !== false;
   $('#set-dnsleak').checked = s.dns_leak_protection !== false;
   $('#set-tray').checked = s.close_to_tray !== false;
   $('#set-autostart').checked = !!s.autostart;
@@ -1002,6 +1267,7 @@ $('#settings-save').addEventListener('click', (e) => withBusy(e.currentTarget, a
     ui_language: $('#set-lang').value,
     listen_port: parseInt($('#set-port').value, 10) || 7890,
     block_quic: $('#set-quic').checked,
+    webrtc_protection: $('#set-webrtc').checked,
     dns_leak_protection: $('#set-dnsleak').checked,
     close_to_tray: $('#set-tray').checked,
     autostart: $('#set-autostart').checked,
@@ -1019,15 +1285,10 @@ $('#settings-save').addEventListener('click', (e) => withBusy(e.currentTarget, a
     domain_strategy: $('#set-strategy').value,
     tun_stack: $('#set-tunstack').value,
   };
-  try {
-    await invoke('set_settings', { settings: s });
-  } finally {
-    snap = await invoke('snapshot');
-  }
+  await applyChange(s, t('settings.title'));
   const l = pickLang(snap.settings.ui_language);
   if (l !== lang) { lang = l; rerenderAll(); }
   renderSettings();
-  toast(t('settings.saved'), 'ok', 2000);
 }));
 
 $('#btn-app-check').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
@@ -1080,12 +1341,8 @@ $('#btn-apps').addEventListener('click', () => {
     if (a.dataset.a !== '1') return;
     let mode = $('#set-appsmode').value;
     if (mode === 'all' && chosen.size) { mode = 'bypass'; $('#set-appsmode').value = mode; }
-    try {
-      await invoke('set_settings', { settings: { ...snap.settings, apps_mode: mode, apps: [...chosen] } });
-      snap = await invoke('snapshot');
-      renderAppsSummary();
-      toast(t('settings.saved'), 'ok', 2000);
-    } catch (err) { toast(err, 'error'); }
+    await applyChange({ ...snap.settings, apps_mode: mode, apps: [...chosen] }, t('set.apps.t'));
+    renderAppsSummary();
   });
   document.body.appendChild(wrap);
   count();

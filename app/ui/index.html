@@ -44,23 +44,27 @@
     <!-- HOME -->
     <section class="view active" id="view-home">
       <div class="home">
-        <div class="hero card">
-          <button class="power" id="power">
-            <span class="ring"></span>
-            <svg viewBox="0 0 24 24"><path d="M12 3v8M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
-          </button>
-          <div class="hero-state" id="hero-state"></div>
-          <div class="hero-sub muted" id="hero-sub"></div>
-          <div class="seg" id="mode-seg">
-            <button data-mode="system_proxy" data-i18n="mode.proxy" class="desktop-only"></button>
-            <button data-mode="proxy" data-i18n="mode.proxyOnly"></button>
-            <button data-mode="tun" data-i18n="mode.tun" data-i18n-android="mode.vpn"></button>
+        <div class="hero card" id="hero" data-phase="off">
+          <button class="mosaic" id="mosaic" aria-describedby="hero-state"></button>
+          <div class="hero-body">
+            <div class="hero-state" id="hero-state" aria-live="polite"></div>
+            <div class="hero-sub muted" id="hero-sub"></div>
+            <ol class="steps hidden" id="steps"></ol>
+            <div class="hero-actions" id="hero-actions"></div>
+            <div class="hero-meta muted small" id="hero-meta"></div>
           </div>
-          <div class="hint muted small" id="mode-hint"></div>
         </div>
 
         <div class="home-right">
-          <div class="card node-card" id="current-node"></div>
+          <button class="card node-card" id="current-node"></button>
+          <div class="card mode-card">
+            <div class="seg" id="mode-seg">
+              <button data-mode="system_proxy" data-i18n="mode.proxy" class="desktop-only"></button>
+              <button data-mode="proxy" data-i18n="mode.proxyOnly"></button>
+              <button data-mode="tun" data-i18n="mode.tun" data-i18n-android="mode.vpn"></button>
+            </div>
+            <div class="hint muted small" id="mode-hint"></div>
+          </div>
           <div class="tiles">
             <div class="tile">
               <div class="tile-label" data-i18n="home.down"></div>
@@ -239,6 +243,7 @@
         <h2 data-i18n="sec.tun" data-i18n-android="sec.vpn"></h2>
         <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.tunstack.t"></div><div class="set-desc" data-i18n="set.tunstack.d"></div></div><div class="set-ctl"><select id="set-tunstack"><option value="singbox" data-i18n="settings.tunSingbox"></option><option value="native" data-i18n="settings.tunNative"></option></select></div></div>
         <div class="set-row windows-only"><div class="set-text"><div class="set-title" data-i18n="set.dnsleak.t"></div><div class="set-desc" data-i18n="set.dnsleak.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-dnsleak" /><span></span></label></div></div>
+        <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.webrtc.t"></div><div class="set-desc" data-i18n="set.webrtc.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-webrtc" /><span></span></label></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.quic.t"></div><div class="set-desc" data-i18n="set.quic.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-quic" /><span></span></label></div></div>
       </div>
       <div class="card set-card">

@@ -5,6 +5,16 @@ pub fn sniff(buf: &[u8]) -> Option<String> {
     tls_sni(buf).or_else(|| http_host(buf))
 }
 
+/// A STUN message (RFC 5389): WebRTC uses them to discover the public address.
+/// Header: two zero bits, type, length (multiple of 4), magic cookie 0x2112A442.
+pub fn is_stun(b: &[u8]) -> bool {
+    if b.len() < 20 || b[0] & 0xC0 != 0 {
+        return false;
+    }
+    let len = u16::from_be_bytes([b[2], b[3]]) as usize;
+    len % 4 == 0 && len + 20 == b.len() && b[4..8] == [0x21, 0x12, 0xA4, 0x42]
+}
+
 pub fn tls_sni(b: &[u8]) -> Option<String> {
     // Record header: type 22 (handshake), version, length
     if b.len() < 5 || b[0] != 0x16 || b[1] != 0x03 {
@@ -123,5 +133,16 @@ mod tests {
         assert_eq!(sniff(b"GET / HTTP/1.1\r\nUser-Agent: x\r\nHost: Example.net:8080\r\n\r\n"), Some("example.net".into()));
         assert_eq!(http_host(b"POST /a HTTP/1.1\r\nhost: [2001:db8::1]:80\r\n\r\n"), Some("2001:db8::1".into()));
         assert_eq!(sniff(b"SSH-2.0-OpenSSH\r\n"), None);
+    }
+
+    #[test]
+    fn stun() {
+        // Binding request, no attributes.
+        let mut m = vec![0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xA4, 0x42];
+        m.extend_from_slice(&[7u8; 12]);
+        assert!(super::is_stun(&m));
+        m[4] = 0;
+        assert!(!super::is_stun(&m));
+        assert!(!super::is_stun(&[0x16, 0x03, 0x01, 0, 0]));
     }
 }

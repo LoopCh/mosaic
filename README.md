@@ -1,4 +1,4 @@
-# Mosaic 0.9
+# Mosaic 0.10
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -16,6 +16,25 @@ paru -S mosaic-vpn-bin   # or yay -S mosaic-vpn-bin
 ```
 
 Updates come with `paru -Syu`. See [packaging/aur](packaging/aur/README.md).
+
+## New in 0.10 — honest status, new Home
+
+- **The node is checked before Mosaic connects.** Mosaic sends a test request through the selected node
+  before it switches the system proxy or TUN on. If the node does not answer in 12 s, Mosaic does not connect
+  (“The server does not answer”, with “Choose another node”, “Smart Connect”, “Try again”). With Smart
+  Connect it takes the fastest node that answers instead. A dead node never leaves you without internet.
+- **After connecting the node keeps being checked** (every 20 s). If it stops answering, Home, the tray icon
+  and the sidebar turn amber: “No connection through the server” — instead of a green “connected” that lies.
+- **New Home.** The status is the centre: a mosaic of 16 tiles that assemble step by step while connecting
+  (“Starting engines → Checking the node → Turning on TUN → Checking DNS”), breathe when connected (brighter
+  with more traffic), turn amber when the node fails and fall apart on errors. The node card opens a quick
+  switcher (search, sorted by latency, “Test all”, Auto). Respects “reduce motion”.
+- **Visible reconnects.** Changing the mode, a node's engine or a setting that needs a reconnect shows
+  “Reconnecting…” with the steps, then “Mode “TUN”: applied · reconnected in 1.4 s”; changes that apply live
+  say “applied without reconnecting”.
+- **Tray and taskbar icon by state:** grey — off, amber — connecting or no answer, colour — connected.
+- **WebRTC leak protection** (Settings → TUN, on by default): in TUN mode STUN requests always go through
+  the node, even for sites with a “Direct” rule, so pages cannot learn your real IP.
 
 ## 0.9.2
 

@@ -29,6 +29,7 @@ fn json<T: Serialize>(v: T) -> Result<Value, String> {
 pub async fn dispatch(ctl: &Arc<Controller>, cmd: &str, args: &Value) -> Result<Value, String> {
     match cmd {
         "snapshot" => json(ctl.snapshot().await),
+        "progress" => json(ctl.progress()),
         "connect" => json(ctl.connect().await?),
         "disconnect" => json(ctl.disconnect().await),
         "import_text" => json(ctl.import_text(&arg::<String>(args, &["text"])?).await),

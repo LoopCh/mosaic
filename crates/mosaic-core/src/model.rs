@@ -437,6 +437,9 @@ pub struct Settings {
     /// Android: which apps go through the VPN, and the chosen package names.
     pub apps_mode: AppsMode,
     pub apps: Vec<String>,
+    /// TUN: STUN (WebRTC address discovery) always goes through the active node, even when
+    /// a rule sends the destination direct — otherwise a web page learns the real IP.
+    pub webrtc_protection: bool,
 }
 
 impl Default for Settings {
@@ -465,6 +468,7 @@ impl Default for Settings {
             check_updates: true,
             apps_mode: AppsMode::All,
             apps: Vec::new(),
+            webrtc_protection: true,
         }
     }
 }

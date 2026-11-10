@@ -42,11 +42,19 @@ pub fn secrets(st: &State) -> Vec<(String, String)> {
     v
 }
 
-fn collect_strings(v: &Value, f: &mut impl FnMut(&str)) {
+fn collect_strings(v: &Value, f: &mut dyn FnMut(&str)) {
     match v {
         Value::String(s) => f(s),
-        Value::Array(a) => a.iter().for_each(|x| collect_strings(x, f)),
-        Value::Object(o) => o.values().for_each(|x| collect_strings(x, f)),
+        Value::Array(a) => {
+            for x in a {
+                collect_strings(x, &mut *f);
+            }
+        }
+        Value::Object(o) => {
+            for x in o.values() {
+                collect_strings(x, &mut *f);
+            }
+        }
         _ => {}
     }
 }
@@ -123,29 +131,33 @@ fn keep_ip(ip: Ipv4Addr) -> bool {
 /// The operating system, as precisely as is cheap to find out.
 pub fn os_description() -> String {
     let base = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
-    #[cfg(target_os = "linux")]
-    {
-        let pretty = std::fs::read_to_string("/etc/os-release")
-            .ok()
-            .and_then(|s| s.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string())));
-        let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").map(|s| s.trim().to_string()).unwrap_or_default();
-        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-        let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
-        return format!("{base} · {} · kernel {kernel} · {desktop} {session}", pretty.unwrap_or_else(|| "Linux".into()));
+    match os_details() {
+        Some(d) => format!("{base} · {d}"),
+        None => base,
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let ver = std::process::Command::new("cmd")
-            .args(["/c", "ver"])
-            .creation_flags(0x0800_0000)
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
-        return format!("{base} · {ver}");
-    }
-    #[allow(unreachable_code)]
-    base
+}
+
+#[cfg(target_os = "linux")]
+fn os_details() -> Option<String> {
+    let pretty = std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string())));
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").map(|s| s.trim().to_string()).unwrap_or_default();
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    Some(format!("{} · kernel {kernel} · {desktop} {session}", pretty.unwrap_or_else(|| "Linux".into())))
+}
+
+#[cfg(windows)]
+fn os_details() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    let out = std::process::Command::new("cmd").args(["/c", "ver"]).creation_flags(0x0800_0000).output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn os_details() -> Option<String> {
+    None
 }
 
 /// Where a saved report goes: the user's Downloads folder (XDG on Linux, so a localised
@@ -179,6 +191,7 @@ pub fn downloads_dir(fallback: &Path) -> PathBuf {
 
 /// Open a folder in the file manager.
 pub fn open_folder(path: &Path) -> Result<(), String> {
+    let _ = path;
     #[cfg(windows)]
     let r = std::process::Command::new("explorer").arg(path).spawn();
     #[cfg(target_os = "linux")]

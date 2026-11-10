@@ -261,6 +261,23 @@ mod tests {
         assert_eq!(node_id("vless://x"), node_id("vless://x"));
         assert_ne!(node_id("vless://x"), node_id("vless://y"));
     }
+
+    #[test]
+    fn log_levels_and_dates() {
+        assert_eq!(fmt_utc(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(fmt_utc(1_762_752_000_123), "2025-11-10T05:20:00.123Z");
+        assert_eq!(split_tag("[tun] hello"), ("tun".to_string(), "hello".to_string()));
+        assert_eq!(classify("Xray", "2026/11/10 [Warning] core: x"), "warn");
+        assert_eq!(classify("sing-box", "ERROR[0000] start service"), "error");
+        assert_eq!(classify("check", "node is not responding: x"), "warn");
+        assert_eq!(classify("hub", "connected"), "info");
+        let l = LogBuf::new(3);
+        for i in 0..5 {
+            l.push(format!("[t] {i}"));
+        }
+        assert_eq!(l.since(0).len(), 3);
+        assert_eq!(l.since(4).len(), 1);
+    }
 }
 
 /// Raise the soft limit on open files to the hard limit. The hub lives in the app
@@ -291,21 +308,4 @@ pub fn raise_fd_limit() -> Option<(u64, u64)> {
 #[cfg(not(unix))]
 pub fn raise_fd_limit() -> Option<(u64, u64)> {
     None
-
-    #[test]
-    fn log_levels_and_dates() {
-        assert_eq!(fmt_utc(0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(fmt_utc(1_762_752_000_123), "2025-11-10T05:20:00.123Z");
-        assert_eq!(split_tag("[tun] hello"), ("tun".to_string(), "hello".to_string()));
-        assert_eq!(classify("Xray", "2026/11/10 [Warning] core: x"), "warn");
-        assert_eq!(classify("sing-box", "ERROR[0000] start service"), "error");
-        assert_eq!(classify("check", "node is not responding: x"), "warn");
-        assert_eq!(classify("hub", "connected"), "info");
-        let l = LogBuf::new(3);
-        for i in 0..5 {
-            l.push(format!("[t] {i}"));
-        }
-        assert_eq!(l.since(0).len(), 3);
-        assert_eq!(l.since(4).len(), 1);
-    }
 }

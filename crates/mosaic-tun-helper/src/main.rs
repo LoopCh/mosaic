@@ -8,8 +8,14 @@
 //!   2. after Mosaic has attached ("go" on stdin), sets the routes: 0/1 + 128/1 into the
 //!      TUN, /32 bypass routes for node servers via the physical gateway, the system's DNS
 //!      servers into the TUN, and the interface DNS in systemd-resolved;
-//!   3. waits until its stdin closes (Mosaic disconnected, quit or crashed) and removes
-//!      everything again.
+//!   3. waits for Mosaic's word on stdin and then:
+//!      * `stop` — removes everything (Mosaic disconnected or quit);
+//!      * `hold` — exits and leaves the interface and its routes (Mosaic reconnects; the
+//!        next helper takes the interface over, so traffic never leaves the tunnel);
+//!      * stdin closed without a word (Mosaic crashed): with the kill switch on, the
+//!        interface stays and swallows all traffic — nothing leaks; otherwise it is removed.
+//!
+//!   `clean` removes a left-over interface (the user lifts the kill switch).
 //!
 //! Protocol on stdout: `created`, then `ready`, or `error: …`; `warn: …` lines are logged.
 
@@ -142,9 +148,18 @@ mod imp {
         let _ = out.flush();
     }
 
-    /// Arguments: run <uid> <physical-if> <gateway or -> <bypass ips, comma> <dns ips, comma> <ipv6 0|1>
+    /// Arguments: run <uid> <physical-if> <gateway or -> <bypass ips, comma> <dns ips, comma> <ipv6 0|1> [ks]
     pub fn main() {
         let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.first().map(String::as_str) == Some("clean") {
+            std::process::exit(match clean() {
+                Ok(()) => 0,
+                Err(e) => {
+                    say(&format!("error: {e}"));
+                    1
+                }
+            });
+        }
         if args.first().map(String::as_str) != Some("run") {
             eprintln!("mosaic-tun-helper is started by Mosaic; it is not meant to be run by hand");
             std::process::exit(2);
@@ -162,6 +177,17 @@ mod imp {
         }
     }
 
+    /// Lift the kill switch: remove the interface a crashed or held run left behind.
+    fn clean() -> Result<(), String> {
+        raise_ambient()?;
+        let ip = Ip(which("ip").ok_or("the `ip` command (iproute2) was not found")?);
+        if Path::new("/sys/class/net").join(TUN_NAME).exists() {
+            ip.run(&["link", "del", TUN_NAME])?;
+        }
+        say("clean");
+        Ok(())
+    }
+
     fn split_list(s: &str) -> Vec<String> {
         s.split(',').map(str::trim).filter(|x| !x.is_empty() && *x != "-").map(String::from).collect()
     }
@@ -175,15 +201,23 @@ mod imp {
         let bypass = split_list(&args[3]);
         let dns_routes = split_list(&args[4]);
         let ipv6 = args[5] == "1";
+        let kill_switch = args.get(6).map(String::as_str) == Some("ks");
 
         raise_ambient()?;
         let ip = Ip(which("ip").ok_or("the `ip` command (iproute2) was not found")?);
 
-        // A leftover interface from a crashed run.
-        let _ = ip.run(&["link", "del", TUN_NAME]);
-        create_persistent(TUN_NAME, uid)?;
+        // An interface left by the previous run (a reconnect or the kill switch after a crash):
+        // take it over as it is, so traffic keeps going into it and never leaks. If that is not
+        // possible, start from scratch.
+        let exists = Path::new("/sys/class/net").join(TUN_NAME).exists();
+        if !(exists && create_persistent(TUN_NAME, uid).is_ok()) {
+            let _ = ip.run(&["link", "del", TUN_NAME]);
+            create_persistent(TUN_NAME, uid)?;
+        }
         let mut added: Vec<Vec<String>> = Vec::new();
+        let mut keep = false;
         let res = (|| -> Result<(), String> {
+            let _ = ip.run(&["addr", "flush", "dev", TUN_NAME]);
             ip.run(&["addr", "add", "172.19.0.1/30", "dev", TUN_NAME])?;
             ip.run(&["link", "set", TUN_NAME, "mtu", "1500", "up"])?;
             if ipv6 {
@@ -236,14 +270,35 @@ mod imp {
                     let _ = Command::new(&rc).args(["flush-caches"]).status();
                 }
             }
+            if kill_switch {
+                say("kill switch on: if Mosaic stops unexpectedly, traffic stays blocked");
+            }
             say("ready");
-            // Until Mosaic closes our stdin.
-            let mut sink = String::new();
-            while std::io::stdin().lock().read_line(&mut sink).map(|n| n > 0).unwrap_or(false) {
-                sink.clear();
+            // Until Mosaic says what to do, or its end of stdin closes (it crashed).
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match std::io::stdin().lock().read_line(&mut line) {
+                    Ok(0) | Err(_) => {
+                        keep = kill_switch;
+                        break;
+                    }
+                    Ok(_) => match line.trim() {
+                        "stop" => break,
+                        "hold" => {
+                            keep = true;
+                            break;
+                        }
+                        _ => {}
+                    },
+                }
             }
             Ok(())
         })();
+        if keep && res.is_ok() {
+            // The interface and its routes stay: all traffic goes into a tunnel nobody reads.
+            return Ok(());
+        }
         for r in &added {
             let args: Vec<&str> = r.iter().map(String::as_str).collect();
             let _ = ip.run(&args);

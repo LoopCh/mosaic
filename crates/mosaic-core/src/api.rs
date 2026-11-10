@@ -50,10 +50,13 @@ pub async fn dispatch(ctl: &Arc<Controller>, cmd: &str, args: &Value) -> Result<
             json(ctl.set_rules(rules, final_target).await)
         }
         "set_settings" => json(ctl.set_settings(arg::<Settings>(args, &["settings"])?).await?),
+        "release_kill_switch" => json(ctl.release_kill_switch().await?),
         "set_smart" => json(ctl.set_smart(arg::<bool>(args, &["on"])?).await),
         "test_latency" => json(ctl.test_latency().await?),
         "connections" => json(ctl.connections()),
         "logs" => json(ctl.logs()),
+        "log_entries" => json(ctl.log_entries(arg::<u64>(args, &["since"]).unwrap_or(0))),
+        "diagnostics" => json(serde_json::json!({ "text": ctl.diagnostics().await, "path": null })),
         "engine_versions" => json(ctl.engine_versions().await),
         "check_engine_updates" => json(ctl.check_engine_updates().await),
         "update_engine" => json(ctl.update_engine(arg::<EngineKind>(args, &["kind"])?).await?),

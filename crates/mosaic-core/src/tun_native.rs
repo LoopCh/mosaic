@@ -30,6 +30,8 @@ pub struct NativeParams {
     pub fd: Option<i32>,
     /// Linux: Mosaic's helper binary that creates and configures the interface.
     pub helper: Option<std::path::PathBuf>,
+    /// Linux: the helper keeps the interface (and so blocks traffic) if Mosaic crashes.
+    pub kill_switch: bool,
     pub routing: SharedRouting,
     pub stats: Arc<Stats>,
     pub logs: Arc<LogBuf>,
@@ -90,7 +92,10 @@ impl NativeTun {
         }
     }
 
-    pub async fn stop(self) {
+    /// `hold`: Linux — leave the interface and its routes in place (a reconnect is coming,
+    /// or the kill switch must keep blocking); the next run takes them over.
+    pub async fn stop(self, hold: bool) {
+        let _ = hold;
         #[cfg(windows)]
         self.inner.stop().await;
         #[cfg(unix)]
@@ -101,7 +106,7 @@ impl NativeTun {
             let _ = self.task.await;
             #[cfg(target_os = "linux")]
             if let Some(h) = self.helper {
-                h.stop().await;
+                h.stop(hold).await;
             }
             self.logs.push("[tun] native TUN stopped");
         }
@@ -652,10 +657,16 @@ mod linux_side {
     }
 
     impl Helper {
-        pub async fn stop(mut self) {
-            crate::net::set_bypass_interface(0);
-            crate::net::set_bypass_device("");
-            drop(self.stdin.take()); // the helper cleans up when its stdin closes
+        pub async fn stop(mut self, hold: bool) {
+            if let Some(mut stdin) = self.stdin.take() {
+                let _ = stdin.write_all(if hold { b"hold\n" } else { b"stop\n" }).await;
+                drop(stdin);
+            }
+            if !hold {
+                // While the interface stays, Mosaic's own sockets must keep going around it.
+                crate::net::set_bypass_interface(0);
+                crate::net::set_bypass_device("");
+            }
             if tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await.is_err() {
                 let _ = self.child.kill().await;
             }
@@ -695,6 +706,7 @@ mod linux_side {
             .arg(join(&bypass))
             .arg(join(&dns))
             .arg("1")
+            .arg(if p.kill_switch { "ks" } else { "-" })
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

@@ -98,6 +98,7 @@
           <button class="btn primary" id="btn-import" data-i18n="nodes.import"></button>
           <button class="btn" id="btn-test" data-i18n="nodes.test"></button>
           <button class="btn" id="btn-update-subs" data-i18n="nodes.updateSubs"></button>
+          <button class="btn smart-btn" id="btn-smart" aria-controls="smart-card"><i class="sdot"></i><span data-i18n="smart.title"></span></button>
         </div>
       </header>
       <div class="card import hidden" id="import-panel">
@@ -109,7 +110,7 @@
           <span class="muted small" id="import-hint"></span>
         </div>
       </div>
-      <div class="card smart" id="smart-card">
+      <div class="card smart hidden" id="smart-card">
         <label class="switch"><input type="checkbox" id="smart-toggle" /><span></span></label>
         <div><div class="set-title" data-i18n="smart.title"></div><div class="set-desc" data-i18n="smart.desc"></div></div>
         <div class="smart-state muted small" id="smart-state"></div>
@@ -163,6 +164,14 @@
             <option value="host" data-i18n="conns.viewHost"></option>
             <option value="domain" data-i18n="conns.viewDomain"></option>
           </select>
+          <select id="conn-group" data-i18n-title="conns.groupTitle">
+            <option value="none" data-i18n="conns.groupNone"></option>
+            <option value="app" data-i18n="conns.groupApp"></option>
+            <option value="domain" data-i18n="conns.groupDomain"></option>
+            <option value="rule" data-i18n="conns.groupRule"></option>
+            <option value="out" data-i18n="conns.groupOut"></option>
+          </select>
+          <button class="btn" id="conn-fold" data-i18n-title="conns.foldTitle">⇕</button>
           <select id="conn-sort" class="narrow-only"></select>
           <label class="check"><input type="checkbox" id="conn-active-only" /> <span data-i18n="conns.activeOnly"></span></label>
         </div>
@@ -207,11 +216,23 @@
     <section class="view" id="view-logs">
       <header class="view-head"><h1 data-i18n="nav.logs"></h1>
         <div class="actions">
-          <label class="check"><input type="checkbox" id="log-follow" checked /> <span data-i18n="logs.follow"></span></label>
+          <button class="btn primary" id="log-report" data-i18n="logs.report"></button>
+          <button class="btn desktop-only" id="log-folder" data-i18n="logs.folder"></button>
           <button class="btn" id="log-copy" data-i18n="logs.copy"></button>
         </div>
       </header>
-      <pre class="logs" id="logs"></pre>
+      <p class="muted lead" data-i18n="logs.lead"></p>
+      <div class="log-tools">
+        <input id="log-filter" data-i18n-ph="logs.filterPh" />
+        <div class="seg" id="log-level">
+          <button data-level="all" class="active" data-i18n="logs.all"></button>
+          <button data-level="warn" data-i18n="logs.warn"></button>
+          <button data-level="error" data-i18n="logs.errors"></button>
+        </div>
+        <select id="log-source"></select>
+        <label class="check"><input type="checkbox" id="log-follow" checked /> <span data-i18n="logs.follow"></span></label>
+      </div>
+      <div class="logview" id="logs" role="log" aria-live="off"></div>
     </section>
 
     <!-- SETTINGS -->
@@ -243,6 +264,8 @@
         <h2 data-i18n="sec.tun" data-i18n-android="sec.vpn"></h2>
         <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.tunstack.t"></div><div class="set-desc" data-i18n="set.tunstack.d"></div></div><div class="set-ctl"><select id="set-tunstack"><option value="singbox" data-i18n="settings.tunSingbox"></option><option value="native" data-i18n="settings.tunNative"></option></select></div></div>
         <div class="set-row windows-only"><div class="set-text"><div class="set-title" data-i18n="set.dnsleak.t"></div><div class="set-desc" data-i18n="set.dnsleak.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-dnsleak" /><span></span></label></div></div>
+        <div class="set-row desktop-only"><div class="set-text"><div class="set-title" data-i18n="set.ks.t"></div><div class="set-desc" data-i18n="set.ks.d"></div><div class="set-desc ks-note" id="ks-note"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-ks" /><span></span></label></div></div>
+        <div class="set-row android-only"><div class="set-text"><div class="set-title" data-i18n="set.ks.t"></div><div class="set-desc" data-i18n="set.ksAndroid.d"></div><div class="set-desc ks-note" id="ks-android-state"></div></div><div class="set-ctl"><button class="btn" id="ks-open-vpn" data-i18n="set.ksAndroid.open"></button></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.webrtc.t"></div><div class="set-desc" data-i18n="set.webrtc.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-webrtc" /><span></span></label></div></div>
         <div class="set-row"><div class="set-text"><div class="set-title" data-i18n="set.quic.t"></div><div class="set-desc" data-i18n="set.quic.d"></div></div><div class="set-ctl"><label class="switch"><input type="checkbox" id="set-quic" /><span></span></label></div></div>
       </div>

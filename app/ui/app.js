@@ -47,13 +47,25 @@ function fmtBytes(n) {
   const u = UNITS[lang] || UNITS.en;
   let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return (i ? n.toFixed(n < 10 ? 2 : n < 100 ? 1 : 0) : n) + ' ' + u[i];
+  return (i ? n.toFixed(n < 10 ? 2 : n < 100 ? 1 : 0) : Math.round(n)) + ' ' + u[i];
 }
 const fmtRate = (n) => fmtBytes(n) + (lang === 'ru' ? '/с' : '/s');
 function fmtDur(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}` : `${m}:${String(r).padStart(2, '0')}`;
+}
+// A toast with a button (e.g. "Open folder").
+function toastAction(msg, label, fn, ms = 9000) {
+  const el = document.createElement('div');
+  el.className = 'toast ok with-action';
+  el.innerHTML = `<span></span><button class="btn"></button>`;
+  el.firstChild.textContent = String(msg);
+  const b = el.lastChild;
+  b.textContent = label;
+  b.addEventListener('click', () => { el.remove(); fn(); });
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), ms);
 }
 function toast(msg, kind = 'info', ms = 4500) {
   const el = document.createElement('div');
@@ -184,7 +196,7 @@ async function poll() {
 async function tickView() {
   try {
     if (view === 'conns') renderConns(await invoke('connections'));
-    if (view === 'logs') renderLogs(await invoke('logs'));
+    if (view === 'logs') await pollLogs();
   } catch (e) { console.error(e); }
 }
 setInterval(tickView, 1000);
@@ -201,6 +213,7 @@ function phase() {
   if (!snap) return 'off';
   if (op.kind) return op.kind;
   if (snap.status.connected) return snap.status.health && snap.status.health.state === 'degraded' ? 'degraded' : 'on';
+  if (snap.status.kill_switch === 'blocking') return 'blocked';
   return op.error ? 'error' : 'off';
 }
 const busy = () => !!op.kind;
@@ -249,7 +262,7 @@ async function disconnectNow() {
 function needsRestart(a, b) {
   if (!snap.status.connected) return false;
   if (isAndroid()) return true; // the VPN service reconnects on every change
-  return a.mode !== b.mode || a.listen_port !== b.listen_port || a.block_quic !== b.block_quic || a.tun_stack !== b.tun_stack
+  return a.mode !== b.mode || a.listen_port !== b.listen_port || a.block_quic !== b.block_quic || a.tun_stack !== b.tun_stack || !!a.kill_switch !== !!b.kill_switch
     || a.direct_dns !== b.direct_dns || a.dns_leak_protection !== b.dns_leak_protection || a.allow_lan !== b.allow_lan
     || (b.mode === 'tun' && b.tun_stack === 'singbox' && a.remote_dns !== b.remote_dns);
 }
@@ -334,7 +347,7 @@ function renderStatus(sample) {
     last = { t: now, up: st.up, down: st.down };
   }
   const ph = phase();
-  const dot = { on: ' on', degraded: ' warn', connecting: ' busy', reloading: ' busy', disconnecting: ' busy', error: ' err' }[ph] || '';
+  const dot = { on: ' on', degraded: ' warn', connecting: ' busy', reloading: ' busy', disconnecting: ' busy', error: ' err', blocked: ' err' }[ph] || '';
   $('#side-dot').className = 'dot' + dot;
   $('#side-status').textContent = t('phase.' + ph);
   const sel = selectedNode();
@@ -395,11 +408,15 @@ function renderHero() {
     sub = viaText(st);
     actions = btn('disconnect', t('hero.disconnect'), 'ghost big');
     const h = st.health || {};
-    meta = [st.since_ms ? t('home.online', fmtDur(Date.now() - st.since_ms)) : '', h.ms != null ? t('hero.answers', h.ms) : ''].filter(Boolean).join(' · ');
+    meta = [st.since_ms ? t('home.online', fmtDur(Date.now() - st.since_ms)) : '', h.ms != null ? t('hero.answers', h.ms) : '', st.kill_switch === 'armed' ? t('hero.ksOn') : ''].filter(Boolean).join(' · ');
   } else if (ph === 'degraded') {
     sub = t('hero.degraded', n ? n.name : '');
     actions = btn('pick', t('hero.pick'), 'primary') + (snap.settings.smart_connect ? '' : btn('smart', t('hero.smartOn'))) + btn('disconnect', t('hero.disconnect'), 'ghost');
     meta = viaText(st);
+  } else if (ph === 'blocked') {
+    sub = t('hero.blocked');
+    actions = btn('connect', t('hero.connect'), 'primary') + btn('unblock', t('hero.unblock'), 'ghost');
+    if (op.error) meta = t('err.detail', errorText(parseError(op.error)).title);
   } else if (ph === 'error') {
     const p = parseError(op.error);
     const e = errorText(p);
@@ -434,11 +451,17 @@ $('#hero-actions').addEventListener('click', async (e) => {
     case 'smart-connect': await invoke('set_smart', { on: true }); snap = await invoke('snapshot'); return connectNow();
     case 'subs': return withBusy(b, async () => { await invoke('update_subscriptions'); snap = await invoke('snapshot'); toast(t('settings.saved'), 'ok', 2000); });
     case 'logs': return show('logs');
+    case 'unblock':
+      return withBusy(b, async () => {
+        try { await invoke('release_kill_switch'); op.error = null; toast(t('toast.unblocked'), 'ok', 3000); }
+        catch (e) { toast(e, 'error'); }
+        snap = await invoke('snapshot'); renderLive();
+      });
   }
 });
 $('#mosaic').addEventListener('click', () => {
   const ph = phase();
-  if (ph === 'on' || ph === 'degraded') disconnectNow(); else if (ph === 'off' || ph === 'error') connectNow();
+  if (ph === 'on' || ph === 'degraded') disconnectNow(); else if (ph === 'off' || ph === 'error' || ph === 'blocked') connectNow();
 });
 
 function renderHome() {
@@ -670,12 +693,15 @@ function nodeRow(n) {
 
 function renderNodes() {
   const filter = $('#node-filter').value.trim().toLowerCase();
-  const key = JSON.stringify([lang, nodeSort, [...collapsed], snap.settings.smart_connect, snap.selected, filter, snap.nodes.map((n) => [n.id, n.name, n.engine, n.effective, n.latency, n.source]), snap.subscriptions]);
+  const key = JSON.stringify([lang, nodeSort, smartShown, [...collapsed], snap.settings.smart_connect, snap.selected, filter, snap.nodes.map((n) => [n.id, n.name, n.engine, n.effective, n.latency, n.source]), snap.subscriptions]);
   if (key === nodesKey) return;
   nodesKey = key;
 
   const smart = !!snap.settings.smart_connect;
   $('#smart-toggle').checked = smart;
+  $('#btn-smart').classList.toggle('on', smart);
+  $('#btn-smart').setAttribute('aria-expanded', String(smartShown));
+  $('#smart-card').classList.toggle('hidden', !smartShown);
   const active = selectedNode();
   $('#smart-state').textContent = smart && active ? t('smart.active', active.name) : '';
   $('#node-sort').value = nodeSort;
@@ -754,6 +780,15 @@ function renderNodes() {
     }));
   });
 }
+
+// The Smart Connect card is folded away by default (it is also on Home and in the node
+// picker); the toolbar button shows it and tells whether Smart Connect is on.
+let smartShown = (() => { try { return localStorage.getItem('mosaic.smartShown') === '1'; } catch { return false; } })();
+$('#btn-smart').addEventListener('click', () => {
+  smartShown = !smartShown;
+  try { localStorage.setItem('mosaic.smartShown', smartShown ? '1' : '0'); } catch {}
+  nodesKey = ''; renderNodes();
+});
 
 $('#node-sort').addEventListener('change', (e) => {
   nodeSort = e.target.value;
@@ -952,6 +987,69 @@ function fillConnSort() {
   $('#conn-view').value = connView;
 }
 
+// Grouping: by app, domain, rule or outbound; groups fold and unfold.
+let connGroup = (() => { try { return localStorage.getItem('mosaic.connGroup') || 'app'; } catch { return 'app'; } })();
+const openGroups = new Set();
+const GROUP_KEY = {
+  app: (c) => c.process || '—',
+  domain: (c) => regDomain(c.host),
+  rule: (c) => c.rule,
+  out: (c) => outText(c),
+};
+// What the "+" of a group adds by default.
+const GROUP_MATCH = { app: 'process_name', domain: 'domain_suffix' };
+
+function outCell(c) {
+  return c.outbound === 'direct' ? `<span class="badge direct">${t('conns.direct')}</span>`
+    : c.outbound === 'block' ? `<span class="badge block">${t('conns.block')}</span>`
+    : `${esc(c.outbound)} ${engineBadge(c.engine === 'Xray' ? 'xray' : 'singbox')}`;
+}
+
+function connRow(c, now, child) {
+  const dur = fmtDur((c.ended_ms || now) - c.started_ms);
+  const net = c.network === 'udp' ? '<span class="net">UDP</span> ' : '';
+  const sel = connSel.has(c.id);
+  const full = `${c.host}:${c.port}`;
+  return `<tr data-id="${c.id}" class="${child ? 'child' : ''} ${c.ended_ms ? 'closed' : ''} ${c.error ? 'err' : ''} ${sel ? 'sel' : ''}" title="${esc(c.error || '')}">
+    <td class="c-sel"><input type="checkbox" ${sel ? 'checked' : ''} aria-label="${t('conns.select')}" /></td>
+    <td class="c-app">${esc(c.process || '—')}</td>
+    <td class="c-dest" title="${esc(full)}">${net}${esc(destText(c))}</td>
+    <td class="c-rule">${esc(c.rule)}</td><td class="c-out">${outCell(c)}</td>
+    <td class="c-up num">${fmtBytes(c.up)}</td><td class="c-down num">${fmtBytes(c.down)}</td><td class="c-time num">${dur}</td>
+    <td class="c-act"><button class="icon-btn add" title="${t('conns.toRulesOne')}">+</button></td></tr>`;
+}
+
+// The most frequent values of `get` in a group, for its one-line summary.
+function topValues(items, get, n = 3) {
+  const m = new Map();
+  for (const c of items) { const v = get(c); if (v) m.set(v, (m.get(v) || 0) + 1); }
+  const top = [...m.entries()].sort((a, b) => b[1] - a[1]);
+  return top.slice(0, n).map((x) => x[0]).join(', ') + (top.length > n ? ` +${top.length - n}` : '');
+}
+
+function groupRow(g, now) {
+  const items = g.items;
+  const active = items.filter((c) => c.ended_ms == null).length;
+  const errors = items.filter((c) => c.error).length;
+  const up = items.reduce((a, c) => a + c.up, 0), down = items.reduce((a, c) => a + c.down, 0);
+  const selN = items.filter((c) => connSel.has(c.id)).length;
+  const sub = connGroup === 'app' ? topValues(items, (c) => regDomain(c.host))
+    : connGroup === 'domain' ? topValues(items, (c) => c.process)
+    : connGroup === 'rule' ? topValues(items, outText)
+    : topValues(items, (c) => c.process);
+  const open = openGroups.has(g.key);
+  const net = items.some((c) => c.network === 'udp') ? '<span class="net">UDP</span> ' : '';
+  return `<tr class="grp ${open ? 'open' : ''} ${selN ? 'sel' : ''} ${errors && errors === items.length ? 'err' : ''}" data-g="${esc(g.key)}">
+    <td class="c-sel"><input type="checkbox" class="gsel" ${selN && selN === items.length ? 'checked' : ''} data-ind="${selN && selN < items.length ? 1 : 0}" aria-label="${t('conns.selectGroup')}" /></td>
+    <td class="c-grp" colspan="4"><span class="caret">▸</span><span class="g-label">${net}${esc(g.label)}</span>
+      <span class="g-count">${t('conns.gCount', items.length)}${active ? ` · <b>${t('conns.gActive', active)}</b>` : ''}${errors ? ` · <span class="g-err">${t('conns.gErrors', errors)}</span>` : ''}</span>
+      <span class="g-sub muted">${esc(sub)}</span></td>
+    <td class="c-up num">${fmtBytes(up)}</td><td class="c-down num">${fmtBytes(down)}</td>
+    <td class="c-time num">${fmtDur(now - Math.min(...items.map((c) => c.started_ms)))}</td>
+    <td class="c-act"><button class="icon-btn add" title="${t('conns.toRulesGroup')}">+</button></td></tr>`;
+}
+
+let connGroups = [];
 function renderConns(list) {
   connList = list;
   const f = $('#conn-filter').value.trim().toLowerCase();
@@ -965,23 +1063,52 @@ function renderConns(list) {
     const d = connSort.dir;
     rows = rows.map((c) => [get(c), c]).sort((a, b) => (a[0] < b[0] ? -d : a[0] > b[0] ? d : 0)).map((x) => x[1]);
   }
-  connShown = rows.slice(0, 400);
-  $('#conn-table tbody').innerHTML = connShown.map((c) => {
-    const out = c.outbound === 'direct' ? `<span class="badge direct">${t('conns.direct')}</span>`
-      : c.outbound === 'block' ? `<span class="badge block">${t('conns.block')}</span>`
-      : `${esc(c.outbound)} ${engineBadge(c.engine === 'Xray' ? 'xray' : 'singbox')}`;
-    const dur = fmtDur((c.ended_ms || now) - c.started_ms);
-    const net = c.network === 'udp' ? '<span class="net">UDP</span> ' : '';
-    const sel = connSel.has(c.id);
-    const full = `${c.host}:${c.port}`;
-    return `<tr data-id="${c.id}" class="${c.ended_ms ? 'closed' : ''} ${c.error ? 'err' : ''} ${sel ? 'sel' : ''}" title="${esc(c.error || '')}">
-      <td class="c-sel"><input type="checkbox" ${sel ? 'checked' : ''} aria-label="${t('conns.select')}" /></td>
-      <td class="c-app">${esc(c.process || '—')}</td>
-      <td class="c-dest" title="${esc(full)}">${net}${esc(destText(c))}</td>
-      <td class="c-rule">${esc(c.rule)}</td><td class="c-out">${out}</td>
-      <td class="c-up num">${fmtBytes(c.up)}</td><td class="c-down num">${fmtBytes(c.down)}</td><td class="c-time num">${dur}</td>
-      <td class="c-act"><button class="icon-btn add" title="${t('conns.toRulesOne')}">+</button></td></tr>`;
-  }).join('') || `<tr><td colspan="9" class="muted">${t('conns.empty')}</td></tr>`;
+  $('#conn-group').value = connGroup;
+  $('#conn-fold').classList.toggle('hidden', connGroup === 'none');
+  let html = '';
+  if (connGroup === 'none') {
+    connGroups = [];
+    connShown = rows.slice(0, 400);
+    html = connShown.map((c) => connRow(c, now, false)).join('');
+  } else {
+    const keyOf = GROUP_KEY[connGroup];
+    const map = new Map();
+    for (const c of rows) {
+      const k = keyOf(c);
+      if (!map.has(k)) map.set(k, { key: k, label: k, items: [] });
+      map.get(k).items.push(c);
+    }
+    let groups = [...map.values()];
+    // Groups follow the column sort (sums for traffic, the oldest for time); by default the
+    // group with the newest connection comes first.
+    const agg = {
+      up: (g) => g.items.reduce((a, c) => a + c.up, 0),
+      down: (g) => g.items.reduce((a, c) => a + c.down, 0),
+      time: (g) => now - Math.min(...g.items.map((c) => c.started_ms)),
+    };
+    if (connSort.key) {
+      const get = agg[connSort.key] || ((g) => SORTS[connSort.key](g.items[0]));
+      const d = connSort.dir;
+      groups = groups.map((g) => [get(g), g]).sort((a, b) => (a[0] < b[0] ? -d : a[0] > b[0] ? d : 0)).map((x) => x[1]);
+    } else {
+      groups.sort((a, b) => Math.max(...b.items.map((c) => c.started_ms)) - Math.max(...a.items.map((c) => c.started_ms)));
+    }
+    connGroups = groups;
+    connShown = rows;
+    let budget = 400;
+    for (const g of groups) {
+      html += groupRow(g, now);
+      if (openGroups.has(g.key) && budget > 0) {
+        const part = g.items.slice(0, budget);
+        budget -= part.length;
+        html += part.map((c) => connRow(c, now, true)).join('');
+        if (g.items.length > part.length) html += `<tr class="child more"><td colspan="9" class="muted">${t('conns.more', g.items.length - part.length)}</td></tr>`;
+      }
+    }
+  }
+  $('#conn-table tbody').innerHTML = html || `<tr><td colspan="9" class="muted">${t('conns.empty')}</td></tr>`;
+  $$('#conn-table .gsel').forEach((cb) => { cb.indeterminate = cb.dataset.ind === '1'; });
+  $('#conn-fold').title = t(groupsAllOpen() ? 'conns.foldAll' : 'conns.unfoldAll');
 
   $$('#conn-table th[data-sort]').forEach((th) => {
     th.classList.toggle('sort-asc', connSort.key === th.dataset.sort && connSort.dir === 1);
@@ -989,6 +1116,18 @@ function renderConns(list) {
   });
   updateSelBar();
 }
+const groupsAllOpen = () => connGroups.length > 0 && connGroups.every((g) => openGroups.has(g.key));
+
+$('#conn-group').addEventListener('change', (e) => {
+  connGroup = e.target.value;
+  openGroups.clear();
+  try { localStorage.setItem('mosaic.connGroup', connGroup); } catch {}
+  renderConns(connList);
+});
+$('#conn-fold').addEventListener('click', () => {
+  if (groupsAllOpen()) openGroups.clear(); else connGroups.forEach((g) => openGroups.add(g.key));
+  renderConns(connList);
+});
 
 function updateSelBar() {
   const n = connSel.size;
@@ -1007,10 +1146,22 @@ function toggleConn(id, on) {
   if (on ?? !connSel.has(id)) connSel.set(id, c); else connSel.delete(id);
   const tr = $(`#conn-table tr[data-id="${id}"]`);
   if (tr) { tr.classList.toggle('sel', connSel.has(id)); $('input', tr).checked = connSel.has(id); }
-  updateSelBar();
+  if (connGroup !== 'none') renderConns(connList); // group checkboxes follow
+  else updateSelBar();
 }
 
 $('#conn-table tbody').addEventListener('click', (e) => {
+  const gr = e.target.closest('tr.grp');
+  if (gr) {
+    const g = connGroups.find((x) => x.key === gr.dataset.g);
+    if (!g) return;
+    if (e.target.closest('.add')) { addToRulesDialog(g.items, GROUP_MATCH[connGroup]); return; }
+    if (e.target.matches('.gsel')) {
+      for (const c of g.items) { if (e.target.checked) connSel.set(c.id, c); else connSel.delete(c.id); }
+    } else if (openGroups.has(g.key)) openGroups.delete(g.key); else openGroups.add(g.key);
+    renderConns(connList);
+    return;
+  }
   const tr = e.target.closest('tr[data-id]');
   if (!tr) return;
   const id = +tr.dataset.id;
@@ -1073,10 +1224,12 @@ function existingValues(kind, target) {
   return set;
 }
 
-function addToRulesDialog(conns) {
+function addToRulesDialog(conns, preferKind) {
   if (!conns.length) return;
   const counts = MATCHERS.map((m) => new Set(conns.map(m.val).filter(Boolean)).size);
   let mi = counts.findIndex((n) => n > 0);
+  const pref = MATCHERS.findIndex((m) => m.kind === preferKind);
+  if (pref >= 0 && counts[pref] > 0) mi = pref;
   // Sensible default target: send elsewhere than where they went now.
   const outs = new Set(conns.map((c) => c.outbound));
   let target = outs.has('direct') || outs.has('block') ? 'proxy' : 'direct';
@@ -1217,20 +1370,152 @@ $('#btn-engines-reset').addEventListener('click', (e) => withBusy(e.currentTarge
 }));
 
 // ------------------------------------------------------------------ logs
-let logLen = -1;
-function renderLogs(lines) {
-  if (lines.length === logLen && lines.length < 2000) return;
-  logLen = lines.length;
-  const el = $('#logs');
-  el.textContent = lines.join('\n') || t('logs.empty');
-  if ($('#log-follow').checked) el.scrollTop = el.scrollHeight;
+// ---- logs: levels, sources, search; polled incrementally
+const logs = { entries: [], seq: 0, level: 'all', source: '', shown: 0, key: '' };
+const LOG_KEEP = 5000;
+const LEVEL_RANK = { debug: 0, info: 1, warn: 2, error: 3 };
+
+async function pollLogs() {
+  const fresh = await invoke('log_entries', { since: logs.seq });
+  if (fresh.length) {
+    logs.seq = fresh.at(-1).seq;
+    logs.entries.push(...fresh);
+    if (logs.entries.length > LOG_KEEP) logs.entries.splice(0, logs.entries.length - LOG_KEEP);
+  }
+  renderLogs(fresh.length > 0);
 }
-$('#log-copy').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText($('#logs').textContent); toast(t('logs.copied'), 'ok', 1500); }
-  catch { toast(t('logs.copyFail'), 'error'); }
+
+function logMatches(e, f) {
+  if (logs.level === 'warn' && LEVEL_RANK[e.level] < 2) return false;
+  if (logs.level === 'error' && e.level !== 'error') return false;
+  if (logs.source && e.source !== logs.source) return false;
+  return !f || `${e.source} ${e.msg}`.toLowerCase().includes(f);
+}
+
+const two = (n) => String(n).padStart(2, '0');
+function logTime(ts) {
+  const d = new Date(ts);
+  return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+}
+function logRow(e) {
+  const lvl = { error: 'ERR', warn: 'WARN', info: 'INFO', debug: 'DBG' }[e.level] || e.level;
+  return `<div class="lg lv-${e.level}"><span class="lg-t" title="${esc(new Date(e.ts).toLocaleString())}">${logTime(e.ts)}</span><span class="lg-l">${lvl}</span><button class="lg-s" data-src="${esc(e.source)}">${esc(e.source)}</button><span class="lg-m">${esc(e.msg)}</span></div>`;
+}
+
+function renderLogs(appended) {
+  const el = $('#logs');
+  const f = $('#log-filter').value.trim().toLowerCase();
+  // Level buttons show how many warnings / errors there are.
+  const warn = logs.entries.filter((e) => e.level === 'warn' || e.level === 'error').length;
+  const err = logs.entries.filter((e) => e.level === 'error').length;
+  $('#log-level [data-level="warn"]').textContent = t('logs.warn') + (warn ? ` (${warn})` : '');
+  $('#log-level [data-level="error"]').textContent = t('logs.errors') + (err ? ` (${err})` : '');
+  const sources = [...new Set(logs.entries.map((e) => e.source))].sort();
+  const srcSel = $('#log-source');
+  const srcKey = sources.join('|') + lang;
+  if (srcSel.dataset.key !== srcKey) {
+    srcSel.dataset.key = srcKey;
+    srcSel.innerHTML = `<option value="">${t('logs.allSources')}</option>` + sources.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
+    srcSel.value = logs.source;
+  }
+  const key = [f, logs.level, logs.source, lang].join('\u0001');
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  if (key !== logs.key || !appended || logs.shown > logs.entries.length) {
+    // Full redraw (filters changed): the last 2000 matching lines.
+    logs.key = key;
+    const rows = logs.entries.filter((e) => logMatches(e, f)).slice(-2000);
+    el.innerHTML = rows.map(logRow).join('') || `<div class="empty">${t(logs.entries.length ? 'logs.nothing' : 'logs.empty')}</div>`;
+    logs.shown = logs.entries.length;
+  } else {
+    // Only the new lines.
+    const add = logs.entries.slice(logs.shown).filter((e) => logMatches(e, f));
+    logs.shown = logs.entries.length;
+    if (add.length) {
+      const empty = $('.empty', el);
+      if (empty) empty.remove();
+      el.insertAdjacentHTML('beforeend', add.map(logRow).join(''));
+      while (el.childElementCount > 2500) el.firstElementChild.remove();
+    }
+  }
+  if ($('#log-follow').checked && (atBottom || !appended)) el.scrollTop = el.scrollHeight;
+}
+
+$('#log-filter').addEventListener('input', () => renderLogs(false));
+$('#log-source').addEventListener('change', (e) => { logs.source = e.target.value; renderLogs(false); });
+$$('#log-level button').forEach((b) => b.addEventListener('click', () => {
+  logs.level = b.dataset.level;
+  $$('#log-level button').forEach((x) => x.classList.toggle('active', x === b));
+  renderLogs(false);
+}));
+$('#logs').addEventListener('click', (e) => {
+  const s = e.target.closest('.lg-s');
+  if (!s) return;
+  logs.source = logs.source === s.dataset.src ? '' : s.dataset.src;
+  $('#log-source').value = logs.source;
+  renderLogs(false);
 });
+$('#log-follow').addEventListener('change', (e) => { if (e.target.checked) $('#logs').scrollTop = $('#logs').scrollHeight; });
+
+async function copyText(text, okMsg) {
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch {
+    // WebViews without clipboard permission: the old way.
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    ok = document.execCommand('copy'); ta.remove();
+  }
+  if (okMsg) toast(ok ? okMsg : t('logs.copyFail'), ok ? 'ok' : 'error', 2500);
+  return ok;
+}
+$('#log-copy').addEventListener('click', () => {
+  const f = $('#log-filter').value.trim().toLowerCase();
+  const text = logs.entries.filter((e) => logMatches(e, f))
+    .map((e) => `${new Date(e.ts).toISOString()} ${e.level.toUpperCase().padEnd(5)} [${e.source}] ${e.msg}`).join('\n');
+  copyText(text, t('logs.copied'));
+});
+$('#log-folder').addEventListener('click', () => invoke('open_folder', { which: 'logs' }).catch((e) => toast(e, 'error')));
+$('#log-report').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const r = await invoke('diagnostics');
+  if (isAndroid()) {
+    await invoke('share_text', { text: r.text, title: 'Mosaic diagnostic report' });
+    return;
+  }
+  const copied = await copyText(r.text, null);
+  if (r.path) toastAction(t(copied ? 'logs.reportSavedCopied' : 'logs.reportSaved', r.path), t('logs.openFolder'), () => invoke('open_folder', { which: 'downloads' }));
+  else toast(t('logs.reportCopied'), 'ok', 3000);
+}));
 
 // ------------------------------------------------------------------ settings
+// Kill switch: where it works and what it is doing right now.
+function renderKsNote() {
+  const el = $('#ks-note');
+  if (!el || !snap) return;
+  const s = snap.settings, ks = snap.status.kill_switch;
+  const stack = $('#set-tunstack') ? $('#set-tunstack').value : s.tun_stack;
+  let note = '';
+  if (ks === 'armed') note = t('ks.noteArmed');
+  else if (ks === 'blocking') note = t('ks.noteBlocking');
+  else if (snap.platform === 'linux' && stack !== 'native') note = t('ks.noteLinuxStack');
+  else if ((s.mode || 'system_proxy') !== 'tun') note = t('ks.noteTunOnly');
+  el.textContent = note;
+  el.classList.toggle('warn', ks === 'blocking' || (snap.platform === 'linux' && stack !== 'native' && $('#set-ks').checked));
+}
+async function renderAndroidLockdown() {
+  try {
+    const r = await invoke('vpn_lockdown');
+    const el = $('#ks-android-state');
+    if (!r.supported) el.textContent = t('ks.androidOld');
+    else if (r.lockdown == null) el.textContent = t('ks.androidUnknown');
+    else el.textContent = r.lockdown ? t('ks.androidOn') : t('ks.androidOff');
+    el.classList.toggle('warn', r.lockdown === false);
+  } catch { /* desktop */ }
+}
+$('#ks-open-vpn').addEventListener('click', () => invoke('open_vpn_settings').catch(() => {}));
+$('#set-ks').addEventListener('change', renderKsNote);
+$('#set-tunstack').addEventListener('change', renderKsNote);
+
 function renderSettings() {
   if (!snap) return;
   const s = snap.settings;
@@ -1238,6 +1523,9 @@ function renderSettings() {
   $('#set-port').value = s.listen_port;
   $('#set-quic').checked = s.block_quic;
   $('#set-webrtc').checked = s.webrtc_protection !== false;
+  $('#set-ks').checked = !!s.kill_switch;
+  renderKsNote();
+  if (isAndroid()) renderAndroidLockdown();
   $('#set-dnsleak').checked = s.dns_leak_protection !== false;
   $('#set-tray').checked = s.close_to_tray !== false;
   $('#set-autostart').checked = !!s.autostart;
@@ -1268,6 +1556,7 @@ $('#settings-save').addEventListener('click', (e) => withBusy(e.currentTarget, a
     listen_port: parseInt($('#set-port').value, 10) || 7890,
     block_quic: $('#set-quic').checked,
     webrtc_protection: $('#set-webrtc').checked,
+    kill_switch: $('#set-ks').checked,
     dns_leak_protection: $('#set-dnsleak').checked,
     close_to_tray: $('#set-tray').checked,
     autostart: $('#set-autostart').checked,

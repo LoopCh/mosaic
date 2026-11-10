@@ -38,6 +38,13 @@ class MosaicVpnService : VpnService() {
         @Volatile var running = false
             private set
 
+        /** Android's own kill switch, read while the VPN runs (API 29+): always-on VPN and
+         *  "Block connections without VPN". Null until known. */
+        @Volatile var alwaysOn: Boolean? = null
+            private set
+        @Volatile var lockdown: Boolean? = null
+            private set
+
         /** Start and wait for the result: `{"ok":null}` or `{"err":"…"}`. */
         suspend fun start(ctx: Context, vpn: Boolean, port: Int): String {
             val d = CompletableDeferred<String>()
@@ -144,6 +151,10 @@ class MosaicVpnService : VpnService() {
 
     private fun setRunning(on: Boolean) {
         running = on
+        if (on && Build.VERSION.SDK_INT >= 29) {
+            alwaysOn = isAlwaysOn
+            lockdown = isLockdownEnabled
+        }
         Connector.refreshTile(this)
     }
 

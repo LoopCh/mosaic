@@ -440,6 +440,9 @@ pub struct Settings {
     /// TUN: STUN (WebRTC address discovery) always goes through the active node, even when
     /// a rule sends the destination direct — otherwise a web page learns the real IP.
     pub webrtc_protection: bool,
+    /// TUN: if the tunnel goes down without the user disconnecting (Mosaic crashed, a
+    /// reconnect failed), block all traffic outside it instead of letting it leak.
+    pub kill_switch: bool,
 }
 
 impl Default for Settings {
@@ -469,6 +472,7 @@ impl Default for Settings {
             apps_mode: AppsMode::All,
             apps: Vec::new(),
             webrtc_protection: true,
+            kill_switch: false,
         }
     }
 }

@@ -1,4 +1,4 @@
-# Mosaic 0.10
+# Mosaic 0.11
 
 A multi-engine proxy/VPN client. Routing, DNS, statistics and node selection
 live in a small Rust **hub**; Xray and sing-box are interchangeable **engines**
@@ -16,6 +16,30 @@ paru -S mosaic-vpn-bin   # or yay -S mosaic-vpn-bin
 ```
 
 Updates come with `paru -Syu`. See [packaging/aur](packaging/aur/README.md).
+
+## New in 0.11 — kill switch, grouped connections, diagnostics
+
+- **Kill switch** (Settings → TUN, off by default). If the tunnel goes down without you disconnecting —
+  Mosaic crashed or was killed, a reconnect after a change failed — traffic is blocked instead of leaking;
+  the local network keeps working. Home shows “Internet blocked” with “Connect” and “Unblock”; the tray icon
+  turns amber. Disconnecting or quitting lifts the block.
+  * Windows: persistent firewall (WFP) filters — only Mosaic, its engines, the tunnel, loopback, LAN and DHCP
+    may reach the network; they survive a crash. The uninstaller lifts them (`mosaic.exe --unblock`).
+  * Linux (native TUN stack): the TUN interface and its routes stay when Mosaic dies, so all traffic goes
+    into a tunnel nobody reads; reconnects take the interface over without a gap.
+  * Android: the system's own “Always-on VPN” + “Block connections without VPN”; Settings shows whether it is
+    on and opens the VPN settings.
+- **Grouped connections**: by app, domain, rule or outbound. Groups show the count, active and failed
+  connections, traffic and their top domains/apps; unfold for details, select a whole group, or add it to
+  the rules in one click (by app for app groups, by domain for domain groups). Phones get stacked cards.
+- **Logs for diagnostics**: levels and sources (hub, tun, Xray, sing-box, check, killswitch…), search, filters
+  “warnings” / “errors” with counters, local time. The log is also written to `logs/mosaic.log` in the data
+  folder (rotated, 3 × 2 MiB), panics included. **Diagnostic report**: system, status, engines, settings,
+  nodes (anonymised), rule summary and the latest 1500 log lines — node names, servers, keys, links,
+  subscription URLs and public IP addresses are replaced, so it can be shared. Saved to Downloads and copied
+  (desktop) or sent through the share menu (Android). Settings changes and connect results are logged.
+- Home shows exact byte rates (no long fractions); the Smart Connect card on Nodes is folded away behind a
+  toolbar button that also shows whether it is on.
 
 ## New in 0.10 — honest status, new Home
 

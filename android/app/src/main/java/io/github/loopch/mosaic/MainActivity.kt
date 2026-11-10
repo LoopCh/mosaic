@@ -183,6 +183,37 @@ class MainActivity : ComponentActivity() {
             Native.ok(d.await() ?: "")
         }
         "list_apps" -> withContext(Dispatchers.IO) { Native.ok(listApps()) }
+        // Android's own kill switch lives in the system VPN settings.
+        "vpn_lockdown" -> Native.ok(
+            JSONObject()
+                .put("supported", Build.VERSION.SDK_INT >= 29)
+                .put("always_on", MosaicVpnService.alwaysOn ?: JSONObject.NULL)
+                .put("lockdown", MosaicVpnService.lockdown ?: JSONObject.NULL)
+        )
+        // The diagnostic report goes out through the system share sheet (mail, messengers, files).
+        "share_text" -> {
+            val text = try { JSONObject(args).getString("text") } catch (e: Exception) { "" }
+            val title = try { JSONObject(args).optString("title", "Mosaic") } catch (e: Exception) { "Mosaic" }
+            withContext(Dispatchers.Main) {
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_SUBJECT, title)
+                    .putExtra(Intent.EXTRA_TEXT, text)
+                try {
+                    startActivity(Intent.createChooser(send, title))
+                } catch (_: Exception) {
+                }
+            }
+            Native.ok()
+        }
+        "open_vpn_settings" -> {
+            withContext(Dispatchers.Main) {
+                try {
+                    startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS))
+                } catch (_: Exception) {
+                }
+            }
+            Native.ok()
+        }
         else -> withContext(Dispatchers.IO) { Native.invoke(cmd, args) }
     }
 

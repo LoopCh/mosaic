@@ -146,6 +146,34 @@ async fn test_latency(ctl: Ctl<'_>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn log_entries(ctl: Ctl<'_>, since: u64) -> Vec<mosaic_core::util::LogEntry> {
+    ctl.log_entries(since)
+}
+
+/// The diagnostic report: saved to Downloads, and the text for the clipboard.
+#[tauri::command]
+async fn diagnostics(ctl: Ctl<'_>) -> Result<serde_json::Value, String> {
+    let (path, text) = ctl.save_diagnostics().await?;
+    Ok(serde_json::json!({ "text": text, "path": path }))
+}
+
+/// Open the logs folder or the folder the report was saved to.
+#[tauri::command]
+fn open_folder(ctl: Ctl<'_>, which: String) -> Result<(), String> {
+    let dir = match which.as_str() {
+        "logs" => ctl.logs_dir(),
+        "downloads" => mosaic_core::diag::downloads_dir(&ctl.logs_dir()),
+        _ => return Err("unknown folder".into()),
+    };
+    mosaic_core::diag::open_folder(&dir)
+}
+
+#[tauri::command]
+async fn release_kill_switch(ctl: Ctl<'_>) -> Result<(), String> {
+    ctl.release_kill_switch().await
+}
+
+#[tauri::command]
 fn progress(ctl: Ctl<'_>) -> mosaic_core::controller::Progress {
     ctl.progress()
 }
@@ -177,6 +205,7 @@ struct Labels {
     on: &'static str,
     off: &'static str,
     weak: &'static str,
+    blocked: &'static str,
 }
 
 fn labels(ui_language: &str) -> Labels {
@@ -186,9 +215,9 @@ fn labels(ui_language: &str) -> Labels {
         _ => mosaic_core::sys::ui_lang_is_ru(),
     };
     if ru {
-        Labels { auto: "Авто (самый быстрый)", open: "Открыть Mosaic", connect: "Подключить", disconnect: "Отключить", nodes: "Узлы", quit: "Выход", on: "подключено", off: "отключено", weak: "сервер не отвечает" }
+        Labels { auto: "Авто (самый быстрый)", open: "Открыть Mosaic", connect: "Подключить", disconnect: "Отключить", nodes: "Узлы", quit: "Выход", on: "подключено", off: "отключено", weak: "сервер не отвечает", blocked: "интернет заблокирован (kill switch)" }
     } else {
-        Labels { auto: "Auto (fastest)", open: "Open Mosaic", connect: "Connect", disconnect: "Disconnect", nodes: "Nodes", quit: "Quit", on: "connected", off: "disconnected", weak: "the server does not answer" }
+        Labels { auto: "Auto (fastest)", open: "Open Mosaic", connect: "Connect", disconnect: "Disconnect", nodes: "Nodes", quit: "Quit", on: "connected", off: "disconnected", weak: "the server does not answer", blocked: "internet blocked (kill switch)" }
     }
 }
 
@@ -267,6 +296,7 @@ async fn refresh_tray(app: &AppHandle, ctl: &Controller, last: &str) -> String {
     set_state_icon(
         app,
         match (snap.status.connected, snap.status.health.state) {
+            (false, _) if snap.status.kill_switch == "blocking" => IconState::Busy,
             (false, _) => IconState::Off,
             (true, "degraded") => IconState::Busy,
             (true, _) => IconState::On,
@@ -285,6 +315,7 @@ async fn refresh_tray(app: &AppHandle, ctl: &Controller, last: &str) -> String {
     if let Some(tray) = app.tray_by_id("main") {
         let l = labels(&snap.settings.ui_language);
         let state = match (snap.status.connected, snap.status.health.state) {
+            (false, _) if snap.status.kill_switch == "blocking" => l.blocked,
             (false, _) => l.off,
             (true, "degraded") => l.weak,
             (true, _) => l.on,
@@ -347,6 +378,13 @@ fn on_menu(app: &AppHandle, id: &str) {
 // ------------------------------------------------------------------ main
 
 fn main() {
+    // The uninstaller (or the user) lifts the kill switch: remove its filters and quit.
+    if std::env::args().any(|a| a == "--unblock") {
+        #[cfg(windows)]
+        let _ = mosaic_core::wfp::killswitch_remove();
+        let _ = std::fs::remove_file(mosaic_core::store::data_dir().join("killswitch.armed"));
+        return;
+    }
     // Another Mosaic is already running: it shows its window, we quit.
     let Some(instance) = single::acquire() else { return };
     let ctl = Arc::new(Controller::load());
@@ -356,6 +394,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             progress,
+            release_kill_switch,
+            log_entries,
+            diagnostics,
+            open_folder,
             connect,
             disconnect,
             import_text,

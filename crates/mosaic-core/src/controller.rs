@@ -87,6 +87,9 @@ pub struct Status {
     /// DNS leak protection (WFP filters) is active.
     pub dns_protected: bool,
     pub health: Health,
+    /// "off", "armed" (connected, protected) or "blocking" (not connected — traffic is blocked
+    /// until Mosaic connects again or the user lifts the block).
+    pub kill_switch: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -215,6 +218,9 @@ pub struct Controller {
     tun_fd: std::sync::Mutex<Option<i32>>,
     progress: std::sync::Mutex<Progress>,
     health: std::sync::Mutex<Health>,
+    /// The kill switch is in force (filters / held interface). Mirrored in `killswitch.armed`
+    /// in the data folder, so a restart after a crash knows traffic is blocked.
+    kill_armed: AtomicBool,
     dir: PathBuf,
     admin: bool,
 }
@@ -226,6 +232,15 @@ impl Drop for ProgressDone<'_> {
     fn drop(&mut self) {
         *self.0.progress.lock().unwrap() = Progress::default();
     }
+}
+
+/// Marker file: the kill switch is in force (survives a crash / restart).
+const KILL_FLAG: &str = "killswitch.armed";
+
+/// Where the kill switch works: TUN on Windows (WFP filters, both stacks) and on Linux with
+/// Mosaic's own stack (the held interface). Android has it built in (system VPN settings).
+fn kill_switch_supported(settings: &Settings) -> bool {
+    settings.mode == Mode::Tun && (cfg!(windows) || (cfg!(target_os = "linux") && settings.tun_stack == TunStack::Native))
 }
 
 fn routing_for(st: &State, s: &Session) -> Routing {
@@ -404,8 +419,25 @@ impl Controller {
         let fd_limit = crate::util::raise_fd_limit();
         let dir = store::data_dir();
         let _ = std::fs::create_dir_all(dir.join("run"));
+        let kill_armed = dir.join(KILL_FLAG).exists();
         let mut state = store::load_state(&dir);
-        let logs = Arc::new(LogBuf::new(2000));
+        let logs = Arc::new(LogBuf::new(3000));
+        logs.set_file(&dir.join("logs"));
+        logs.push(format!(
+            "[app] Mosaic {} started · {} · data {}",
+            env!("CARGO_PKG_VERSION"),
+            crate::diag::os_description(),
+            dir.display()
+        ));
+        // A panic anywhere ends up in the log file too — the first thing to look at after a crash.
+        {
+            let logs = logs.clone();
+            let prev = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                logs.error(format!("[panic] {info}"));
+                prev(info);
+            }));
+        }
         if state.proxy_dirty {
             match sys::unset_system_proxy() {
                 Ok(()) => logs.push("[hub] system proxy reset after an unclean shutdown"),
@@ -446,6 +478,7 @@ impl Controller {
             tun_fd: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(Progress::default()),
             health: std::sync::Mutex::new(Health { state: "unknown", ..Default::default() }),
+            kill_armed: AtomicBool::new(kill_armed),
             dir,
             // "TUN is possible": Android asks for the VPN permission, Linux grants a capability
             // to sing-box (one password prompt) — neither needs Mosaic itself to run as root.
@@ -590,6 +623,11 @@ impl Controller {
             system_proxy: s.map_or(false, |s| s.system_proxy),
             tun: s.map_or(false, |s| s.tun_up()),
             dns_protected: s.map_or(false, |s| s.dns_protected()),
+            kill_switch: match (self.kill_armed.load(Relaxed), s.is_some()) {
+                (false, _) => "off",
+                (true, true) => "armed",
+                (true, false) => "blocking",
+            },
             health: if s.is_some() { self.health.lock().unwrap().clone() } else { Health { state: "unknown", ..Default::default() } },
         };
         let engine_infos = EngineKind::ALL
@@ -635,6 +673,96 @@ impl Controller {
 
     pub fn logs(&self) -> Vec<String> {
         self.logs.all()
+    }
+
+    /// Log records newer than `since` (for the Logs screen, polled incrementally).
+    pub fn log_entries(&self, since: u64) -> Vec<crate::util::LogEntry> {
+        self.logs.since(since)
+    }
+
+    pub fn logs_dir(&self) -> PathBuf {
+        self.dir.join("logs")
+    }
+
+    /// A report for diagnosing a problem, with servers, accounts and public addresses
+    /// replaced (see `diag`). Safe to paste into an issue.
+    pub async fn diagnostics(&self) -> String {
+        use std::fmt::Write;
+        let versions = self.engine_versions().await;
+        let snap = self.snapshot().await;
+        let secrets = {
+            let g = self.inner.lock().await;
+            crate::diag::secrets(&g.state)
+        };
+        let st = &snap.status;
+        let mut r = String::new();
+        let _ = writeln!(r, "Mosaic diagnostic report");
+        let _ = writeln!(r, "generated: {}", crate::util::fmt_utc(now_ms()));
+        let _ = writeln!(r, "version:   {} ({})", snap.version, snap.platform);
+        let _ = writeln!(r, "system:    {}", crate::diag::os_description());
+        let _ = writeln!(r, "admin:     {}", snap.is_admin);
+        let _ = writeln!(r, "\n## Status");
+        let _ = writeln!(
+            r,
+            "connected: {} · mode {:?} · TUN stack {:?} · TUN up {} · system proxy {} · DNS protected {}",
+            st.connected, st.mode, st.tun_stack, st.tun, st.system_proxy, st.dns_protected
+        );
+        let _ = writeln!(r, "health: {} {:?} {}", st.health.state, st.health.ms, st.health.error.clone().unwrap_or_default());
+        let _ = writeln!(r, "kill switch: {} · active connections {} · up {} B · down {} B", st.kill_switch, st.active_conns, st.up, st.down);
+        let _ = writeln!(r, "\n## Engines");
+        for e in &snap.engines {
+            let v = versions.iter().find(|v| v.kind == e.kind).and_then(|v| v.version.clone()).unwrap_or_else(|| "?".into());
+            let _ = writeln!(r, "{}: {} · found {} · running {} · nodes {}", e.name, v, e.path.is_some(), e.running, e.nodes);
+        }
+        let _ = writeln!(r, "\n## Settings");
+        let mut settings = serde_json::to_value(&snap.settings).unwrap_or(Value::Null);
+        if let Some(o) = settings.as_object_mut() {
+            let n = o.get("apps").and_then(|a| a.as_array()).map_or(0, |a| a.len());
+            o.insert("apps".into(), Value::String(format!("{n} apps")));
+        }
+        let _ = writeln!(r, "{}", serde_json::to_string_pretty(&settings).unwrap_or_default());
+        let _ = writeln!(r, "\n## Nodes ({}), subscriptions ({}), rules ({})", snap.nodes.len(), snap.subscriptions.len(), snap.rules.len());
+        for n in &snap.nodes {
+            let lat = n.latency.as_ref().map(|l| match l.ms {
+                Some(ms) => format!("{ms} ms"),
+                None => format!("error: {}", l.error.clone().unwrap_or_default()),
+            });
+            let sel = if snap.selected.as_deref() == Some(n.node.id.as_str()) { "*" } else { " " };
+            let _ = writeln!(
+                r,
+                "{sel} {} · {} · engine {:?} → {:?} · {}",
+                n.node.name,
+                n.summary,
+                n.node.engine,
+                n.effective,
+                lat.unwrap_or_else(|| "not tested".into())
+            );
+        }
+        for s in &snap.subscriptions {
+            let _ = writeln!(r, "subscription {} · {} · updated {} · {}", s.name, s.url, crate::util::fmt_utc(s.updated_ms), s.last_error.clone().unwrap_or_else(|| "ok".into()));
+        }
+        let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+        for rule in &snap.rules {
+            *kinds.entry(format!("{:?}→{}", rule.kind, rule.target)).or_default() += 1;
+        }
+        let _ = writeln!(r, "rules: {}", kinds.iter().map(|(k, n)| format!("{k} ×{n}")).collect::<Vec<_>>().join(", "));
+        let _ = writeln!(r, "\n## Log (latest {} lines)", self.logs.since(0).len().min(1500));
+        let entries = self.logs.since(0);
+        for e in entries.iter().skip(entries.len().saturating_sub(1500)) {
+            let _ = writeln!(r, "{} {:<5} [{}] {}", crate::util::fmt_utc(e.ts), e.level.to_uppercase(), e.source, e.msg);
+        }
+        crate::diag::redact(&r, &secrets)
+    }
+
+    /// Write the report to the Downloads folder; returns its path.
+    pub async fn save_diagnostics(&self) -> Result<(String, String), String> {
+        let text = self.diagnostics().await;
+        let dir = crate::diag::downloads_dir(&self.logs_dir());
+        let stamp = crate::util::fmt_utc(now_ms()).replace([':', '-'], "").replace('T', "-");
+        let path = dir.join(format!("mosaic-report-{}.txt", &stamp[..15]));
+        std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+        self.logs.push(format!("[app] diagnostic report saved: {}", path.display()));
+        Ok((path.display().to_string(), text))
     }
 
     pub async fn engine_versions(&self) -> Vec<EngineVersion> {
@@ -806,7 +934,7 @@ impl Controller {
         };
         if running {
             self.logs.push("[hub] node engine changed — restarting engines");
-            self.disconnect().await;
+            self.drop_session().await;
             self.connect().await?;
         }
         Ok(())
@@ -941,7 +1069,7 @@ impl Controller {
         }
         let was_connected = self.is_connected().await;
         if was_connected {
-            self.disconnect().await;
+            self.drop_session().await;
         }
         if let Err(e) = updates::swap_in(&files, &staging, &target, &backup) {
             updates::roll_back(&files, &target, &backup);
@@ -954,7 +1082,7 @@ impl Controller {
         if let Err(e) = check {
             self.logs.push(format!("[update] {} {tag} failed ({e}) — restoring the previous version", kind.label()));
             if was_connected {
-                self.disconnect().await;
+                self.drop_session().await;
             }
             updates::roll_back(&files, &target, &backup);
             if was_connected {
@@ -974,7 +1102,7 @@ impl Controller {
         }
         let was_connected = self.is_connected().await;
         if was_connected {
-            self.disconnect().await;
+            self.drop_session().await;
         }
         let res = match std::fs::remove_dir_all(engines::updated_dir()) {
             Ok(()) => Ok(()),
@@ -1187,6 +1315,17 @@ impl Controller {
                 }
             }
             self.close_to_tray.store(new.close_to_tray, Relaxed);
+            // What changed, for the log (a frequent first question when something broke).
+            if let (Ok(Value::Object(a)), Ok(Value::Object(b))) = (serde_json::to_value(&old), serde_json::to_value(&new)) {
+                let changed: Vec<String> = b
+                    .iter()
+                    .filter(|(k, v)| a.get(*k) != Some(*v))
+                    .map(|(k, v)| if k == "apps" { format!("{k} → {} apps", v.as_array().map_or(0, |x| x.len())) } else { format!("{k}: {} → {v}", a.get(k).cloned().unwrap_or(Value::Null)) })
+                    .collect();
+                if !changed.is_empty() {
+                    self.logs.push(format!("[settings] {}", changed.join(", ")));
+                }
+            }
             g.state.settings = new.clone();
             self.save(&g.state);
             let inner = &mut *g;
@@ -1201,10 +1340,11 @@ impl Controller {
                     || old.direct_dns != new.direct_dns
                     || old.dns_leak_protection != new.dns_leak_protection
                     || old.allow_lan != new.allow_lan
+                    || old.kill_switch != new.kill_switch
                     || (new.mode == Mode::Tun && old.remote_dns != new.remote_dns && new.tun_stack == TunStack::Singbox))
         };
         if restart {
-            self.disconnect().await;
+            self.drop_session().await;
             self.connect().await?;
         }
         match autostart_err {
@@ -1433,6 +1573,16 @@ impl Controller {
     }
 
     pub async fn connect(&self) -> Result<(), String> {
+        let started = Instant::now();
+        let r = self.connect_inner().await;
+        match &r {
+            Ok(()) => self.logs.push(format!("[hub] ready in {} ms", started.elapsed().as_millis())),
+            Err(e) => self.logs.error(format!("[hub] connect failed after {} ms: {e}", started.elapsed().as_millis())),
+        }
+        r
+    }
+
+    async fn connect_inner(&self) -> Result<(), String> {
         let _done = ProgressDone(self);
         self.step("prepare", None);
         let mut g = self.inner.lock().await;
@@ -1478,6 +1628,15 @@ impl Controller {
             return Err("This build has no native TUN stack. Switch the TUN stack to sing-box in Settings, or use the build with the native-tun feature.".into());
         }
         self.logs.push("[hub] connecting…");
+        // Linux, kill switch in force: the old interface still takes all traffic, so Mosaic's
+        // own lookups and connections must go around it from the start.
+        #[cfg(target_os = "linux")]
+        if tun && self.kill_armed.load(Relaxed) {
+            if let Some((phys, _)) = crate::linux_tun::physical_default_route() {
+                crate::net::set_bypass_device(&phys);
+                crate::net::set_bypass_interface(crate::linux_tun::ifindex(&phys).unwrap_or(1));
+            }
+        }
         let nodes = g.state.nodes.clone();
         // Android always, Linux in TUN: engines get IP addresses (resolved here, before the TUN
         // is up) — Go cannot use Android's DNS, and on Linux the TUN would answer with fake IPs.
@@ -1593,7 +1752,7 @@ impl Controller {
                     Err(e) => Err(e),
                 }
             }
-            (Mode::Tun, TunStack::Native) => self.start_native(&mut s, &nodes).await,
+            (Mode::Tun, TunStack::Native) => self.start_native(&mut s, &nodes, settings.kill_switch && kill_switch_supported(&settings)).await,
         };
         if let Err(e) = res {
             self.teardown(s).await;
@@ -1616,9 +1775,98 @@ impl Controller {
                 ));
             }
         }
+        // Kill switch: fail-closed like DNS protection — if it cannot be put in place, no connection.
+        if settings.kill_switch && kill_switch_supported(&settings) {
+            if let Err(e) = self.arm_kill_switch() {
+                self.teardown(s).await;
+                return Err(format!("{e}\n\nNot connected: the kill switch could not be enabled. Turn it off in Settings → TUN to connect without it."));
+            }
+        } else if self.kill_armed.load(Relaxed) {
+            // Turned off (or no longer applicable). Windows: remove the filters. Linux: the new
+            // helper runs without "ks" and owns the interface now — only the marker goes.
+            #[cfg(windows)]
+            self.release_kill_switch_os();
+            #[cfg(not(windows))]
+            {
+                self.logs.push("[killswitch] off");
+                self.set_kill_flag(false);
+            }
+        }
         self.stats.clear_closed();
         self.logs.push("[hub] connected");
         g.session = Some(s);
+        Ok(())
+    }
+
+    fn set_kill_flag(&self, on: bool) {
+        self.kill_armed.store(on, Relaxed);
+        let path = self.dir.join(KILL_FLAG);
+        if on {
+            let _ = std::fs::write(&path, now_ms().to_string());
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// Put the kill switch in force for the session that is coming up.
+    fn arm_kill_switch(&self) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            let mut apps: Vec<PathBuf> = EngineKind::ALL.iter().filter_map(|k| engines::find(*k)).collect();
+            if let Ok(exe) = std::env::current_exe() {
+                apps.push(exe);
+            }
+            let idx = crate::wfp::interface_index("Mosaic").ok();
+            crate::wfp::killswitch_install(idx, &apps).map_err(|e| format!("Kill switch: {e}"))?;
+        }
+        // Linux: the helper was started with "ks" and keeps the interface if Mosaic dies.
+        if !self.kill_armed.load(Relaxed) {
+            self.logs.push("[killswitch] on: if the tunnel goes down unexpectedly, traffic is blocked");
+        }
+        self.set_kill_flag(true);
+        Ok(())
+    }
+
+    /// Lift the block: filters (Windows) or the held interface (Linux) go away.
+    fn release_kill_switch_os(&self) {
+        #[cfg(windows)]
+        if let Err(e) = crate::wfp::killswitch_remove() {
+            self.logs.push(format!("[killswitch] could not remove the filters: {e}"));
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        if std::path::Path::new("/sys/class/net/Mosaic").exists() {
+            let res = crate::linux_tun::helper_binary(&engines::bundled_copy_dir()).and_then(|exe| {
+                let out = std::process::Command::new(&exe).arg("clean").output().map_err(|e| e.to_string())?;
+                if out.status.success() {
+                    Ok(())
+                } else {
+                    Err(String::from_utf8_lossy(&out.stdout).trim().trim_start_matches("error: ").to_string())
+                }
+            });
+            if let Err(e) = res {
+                self.logs.push(format!("[killswitch] could not remove the interface: {e}"));
+                return;
+            }
+            crate::net::set_bypass_interface(0);
+            crate::net::set_bypass_device("");
+        }
+        if self.kill_armed.load(Relaxed) {
+            self.logs.push("[killswitch] off: traffic is no longer blocked");
+        }
+        self.set_kill_flag(false);
+    }
+
+    /// The user lifts the block while not connected ("Unblock the internet").
+    pub async fn release_kill_switch(&self) -> Result<(), String> {
+        let g = self.inner.lock().await;
+        if g.session.is_some() {
+            return Err("Mosaic is connected — disconnect to turn the kill switch off".into());
+        }
+        self.release_kill_switch_os();
+        if self.kill_armed.load(Relaxed) {
+            return Err("The block could not be lifted — see the log".into());
+        }
         Ok(())
     }
 
@@ -1700,7 +1948,7 @@ impl Controller {
     }
 
     #[cfg(feature = "native-tun")]
-    async fn start_native(&self, s: &mut Session, nodes: &[Node]) -> Result<(), String> {
+    async fn start_native(&self, s: &mut Session, nodes: &[Node], st_kill_switch: bool) -> Result<(), String> {
         let params = crate::tun_native::NativeParams {
             server_domains: server_domains(nodes),
             // Linux: the engines got their servers as IPs (pinned); the direct DNS server is not
@@ -1718,6 +1966,7 @@ impl Controller {
             helper: Some(crate::linux_tun::helper_binary(&engines::bundled_copy_dir())?),
             #[cfg(not(target_os = "linux"))]
             helper: None,
+            kill_switch: st_kill_switch,
             routing: s.hub.shared(),
             stats: self.stats.clone(),
             logs: self.logs.clone(),
@@ -1728,7 +1977,7 @@ impl Controller {
     }
 
     #[cfg(not(feature = "native-tun"))]
-    async fn start_native(&self, _s: &mut Session, _nodes: &[Node]) -> Result<(), String> {
+    async fn start_native(&self, _s: &mut Session, _nodes: &[Node], _kill_switch: bool) -> Result<(), String> {
         Err("This build has no native TUN stack".into())
     }
 
@@ -1748,7 +1997,8 @@ impl Controller {
         }
         #[cfg(feature = "native-tun")]
         if let Some(t) = native {
-            t.stop().await;
+            // With the kill switch in force the interface stays and keeps taking the traffic.
+            t.stop(self.kill_armed.load(Relaxed)).await;
         }
         if let Some(f) = front {
             f.stop().await;
@@ -1762,7 +2012,22 @@ impl Controller {
         drop(dns_guard);
     }
 
+    /// The user disconnects (or quits): the kill switch is lifted as well.
     pub async fn disconnect(&self) {
+        let armed = self.kill_armed.load(Relaxed);
+        if armed {
+            // The helper removes the interface instead of holding it.
+            self.kill_armed.store(false, Relaxed);
+        }
+        self.drop_session().await;
+        if armed {
+            self.kill_armed.store(true, Relaxed);
+            self.release_kill_switch_os();
+        }
+    }
+
+    /// End the session for a reconnect: the kill switch (if any) stays in force meanwhile.
+    async fn drop_session(&self) {
         let mut g = self.inner.lock().await;
         if let Some(s) = g.session.take() {
             self.teardown(s).await;

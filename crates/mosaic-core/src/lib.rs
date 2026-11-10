@@ -15,6 +15,7 @@
 pub mod api;
 pub mod b64;
 pub mod controller;
+pub mod diag;
 pub mod dns;
 pub mod engines;
 pub mod formats;

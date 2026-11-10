@@ -656,7 +656,7 @@ function subHeader(s, count, open) {
   return `<div class="group-head sub ${s.last_error ? 'err' : ''}" data-group="${esc(s.url)}">
     <button class="caret ${open ? 'open' : ''}" data-act="toggle" title="${t('subs.toggle')}">▸</button>
     <div class="gh-main">
-      <div class="gh-title"><span>${esc(s.name || s.url)}</span><span class="muted small">${t('subs.nodes', count)}</span></div>
+      <div class="gh-title"><span>${esc(s.name || s.url)}</span><span class="muted small">${t(count === 1 ? 'subs.node1' : 'subs.nodes', count)}</span></div>
       <div class="gh-meta muted small">${expire}<span title="${esc(s.url)}">${t('subs.updated', upd)}</span></div>
       ${traffic}
       ${s.last_error ? `<div class="gh-err small">${esc(s.last_error)}</div>` : ''}
@@ -732,7 +732,7 @@ function renderNodes() {
     const open = filter ? true : !collapsed.has(g.id);
     const head = single ? '' : g.sub ? subHeader(g.sub, g.nodes.length, open)
       : `<div class="group-head" data-group="manual"><button class="caret ${open ? 'open' : ''}" data-act="toggle">▸</button>
-          <div class="gh-main"><div class="gh-title"><span>${t('subs.manual')}</span><span class="muted small">${t('subs.nodes', g.nodes.length)}</span></div></div></div>`;
+          <div class="gh-main"><div class="gh-title"><span>${t('subs.manual')}</span><span class="muted small">${t(g.nodes.length === 1 ? 'subs.node1' : 'subs.nodes', g.nodes.length)}</span></div></div></div>`;
     if (filter && !g.nodes.length) return '';
     return `<div class="group">${head}${open ? `<div class="group-body">${sorted(g.nodes).map(nodeRow).join('')}</div>` : ''}</div>`;
   }).join('') || `<div class="empty">${t('nodes.nothing')}</div>`;

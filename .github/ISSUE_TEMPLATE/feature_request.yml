@@ -1,0 +1,15 @@
+name: Idea / Идея
+description: Suggest a feature or an improvement / Предложить возможность или улучшение
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do? / Что хочется сделать?
+      description: The task or the problem, not only the solution / Задача или проблема, а не только решение
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could Mosaic help? / Как Mosaic мог бы помочь?

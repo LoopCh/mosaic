@@ -96,6 +96,8 @@ select { cursor: pointer; }
 .hero[data-phase="degraded"] { --hero-glow: rgba(251, 191, 36, .14); }
 .hero[data-phase="error"], .hero[data-phase="blocked"] { --hero-glow: rgba(248, 113, 113, .12); }
 .hero-body { display: flex; flex-direction: column; align-items: center; width: 100%; }
+/* desktop: the card keeps its height while the connect steps come and go */
+@media (min-width: 761px) { .hero { min-height: 470px; } }
 .hero-state { margin-top: 24px; font-size: 24px; font-weight: 680; letter-spacing: -.01em; }
 .hero[data-phase="on"] .hero-state { color: #fff; }
 .hero[data-phase="degraded"] .hero-state { color: var(--warn); }
@@ -607,4 +609,26 @@ select { cursor: pointer; }
   .lg-s { justify-self: start; }
   .log-tools .seg { flex: 1 1 100%; } .log-tools .seg button { flex: 1; }
   .log-tools select { flex: 1 1 40%; }
+}
+
+/* connections: keep all columns in view on usual window sizes */
+@media (min-width: 761px) {
+  #conn-table td { padding: 8px 10px; }
+  #conn-table th { padding: 10px 10px; }
+  #conn-table td.c-rule { max-width: 170px; }
+  #conn-table td.c-out { max-width: 190px; }
+  #conn-table td.c-dest { max-width: 240px; }
+  #conn-table td.c-app { max-width: 150px; }
+  .c-grp .g-sub { max-width: 240px; }
+}
+@media (min-width: 761px) and (max-width: 1180px) {
+  #conn-table td.c-rule { max-width: 100px; }
+  #conn-table td.c-out { max-width: 140px; }
+  #conn-table td.c-dest { max-width: 170px; }
+  #conn-table td.c-app { max-width: 110px; }
+  .c-grp .g-sub { max-width: 140px; }
+}
+@media (min-width: 761px) and (max-width: 1050px) {
+  #conn-table .c-up { display: none; }
+  #conn-table td.c-dest { max-width: 128px; }
 }

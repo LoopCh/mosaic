@@ -1,0 +1,44 @@
+name: Bug report / Ошибка
+description: Something does not work as expected / Что-то работает не так
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you! The fastest way to a fix: **Logs → Diagnostic report** in Mosaic — it is copied to the clipboard and
+        saved to Downloads, with your servers, keys and addresses already removed. Paste it below.
+
+        Спасибо! Быстрее всего помогает **Логи → Отчёт для диагностики** в Mosaic: он копируется в буфер и сохраняется в
+        «Загрузки», серверы, ключи и адреса из него уже убраны. Вставьте его ниже.
+  - type: input
+    id: version
+    attributes:
+      label: Mosaic version / Версия
+      placeholder: "0.11.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform / Платформа
+      options: [Windows, Linux, Android]
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode / Режим
+      options: [System proxy / Системный прокси, Proxy / Прокси, TUN (sing-box), TUN (own stack / свой стек), VPN (Android)]
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / Что случилось
+      description: What you did, what you expected, what you got / Что делали, что ожидали, что получилось
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Diagnostic report / Отчёт для диагностики
+      description: Logs → Diagnostic report → paste here / Логи → Отчёт для диагностики → вставьте сюда
+      render: text

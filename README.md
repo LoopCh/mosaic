@@ -9,6 +9,29 @@ Interface languages: English, Русский (automatic, switchable in Settings)
 
 Docs: [architecture and tools](docs/ARCHITECTURE.md) · [project overview, history, plans](docs/PROJECT.md) (Russian).
 
+## Arch Linux (AUR)
+
+```sh
+paru -S mosaic-vpn-bin   # or yay -S mosaic-vpn-bin
+```
+
+Updates come with `paru -Syu`. See [packaging/aur](packaging/aur/README.md).
+
+## 0.9.2
+
+- Native TUN: some HTTPS sites dropped the connection right after the TLS handshake started
+  (`NS_ERROR_NET_RESET`, “unexpected eof”). The stack announced no MSS, so apps sent the TLS ClientHello in
+  536-byte pieces and Mosaic forwarded them one by one; some servers and SNI routers reject that. Now the
+  stack announces MSS 1440 and a 64 KiB window, and the app's first TLS message is forwarded in one piece,
+  exactly as with a direct connection. Also helps SNI detection when the browser bypasses Mosaic's DNS.
+- The TUN journal no longer reports multicast chatter (mDNS, LLMNR, SSDP) and idle UDP flows as errors.
+
+## 0.9.1
+
+- Fixed “Too many open files” on Linux after some time in TUN mode: Mosaic raises its open-files limit at
+  start (like Xray and sing-box do), and TCP connections are closed after 5 minutes without data
+  (30 s once one side has finished), so sockets no longer pile up.
+
 ## New in 0.9 — subscriptions, more formats, connections → rules
 
 - **Subscription info.** Nodes are grouped by subscription. Each group header shows the title the provider

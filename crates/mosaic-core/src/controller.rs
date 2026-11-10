@@ -366,6 +366,7 @@ async fn fetch(url: String, ua: String) -> Result<Fetched, String> {
 
 impl Controller {
     pub fn load() -> Self {
+        let fd_limit = crate::util::raise_fd_limit();
         let dir = store::data_dir();
         let _ = std::fs::create_dir_all(dir.join("run"));
         let mut state = store::load_state(&dir);
@@ -379,6 +380,13 @@ impl Controller {
             let _ = store::save_state(&dir, &state);
         }
         logs.push(format!("[hub] data: {}", dir.display()));
+        if let Some((old, new)) = fd_limit {
+            if new != old {
+                logs.push(format!("[hub] open files limit: {old} → {new}"));
+            } else if new < 8192 {
+                logs.push(format!("[hub] open files limit is only {new}; with many connections Mosaic may hit \"Too many open files\""));
+            }
+        }
         #[cfg(target_os = "linux")]
         {
             for l in crate::linux::install_bundled(&engines::bundled_copy_dir()) {

@@ -112,3 +112,33 @@ mod tests {
         assert_ne!(node_id("vless://x"), node_id("vless://y"));
     }
 }
+
+/// Raise the soft limit on open files to the hard limit. The hub lives in the app
+/// process (next to WebKit), and in TUN mode every connection holds a socket, so the
+/// usual soft limit of 1024 runs out ("Too many open files"). Go programs (Xray,
+/// sing-box) do the same at start. Returns (old, new) soft limits.
+#[cfg(unix)]
+pub fn raise_fd_limit() -> Option<(u64, u64)> {
+    unsafe {
+        let mut l: libc::rlimit = std::mem::zeroed();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) != 0 {
+            return None;
+        }
+        let old = l.rlim_cur as u64;
+        // Some kernels report an "infinite" hard limit; keep the new value sane.
+        let want = if l.rlim_max == libc::RLIM_INFINITY { 1 << 20 } else { l.rlim_max };
+        if l.rlim_cur >= want {
+            return Some((old, old));
+        }
+        l.rlim_cur = want;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &l) != 0 {
+            return Some((old, old));
+        }
+        Some((old, want as u64))
+    }
+}
+
+#[cfg(not(unix))]
+pub fn raise_fd_limit() -> Option<(u64, u64)> {
+    None
+}

@@ -98,3 +98,40 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: out/*
+
+  # Arch Linux: update the AUR package mosaic-vpn-bin (installable with paru / yay).
+  # Runs only when the AUR_SSH_PRIVATE_KEY secret is set.
+  aur-publish:
+    needs: [linux-publish]
+    runs-on: ubuntu-latest
+    env:
+      AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.AUR_KEY != ''
+      - uses: actions/download-artifact@v4
+        if: env.AUR_KEY != ''
+        with:
+          name: Mosaic-linux-x64
+          path: out
+      - name: Fill in version and checksum
+        if: env.AUR_KEY != ''
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          deb="out/Mosaic_${ver}_amd64.deb"
+          test -f "$deb" || { echo "::error::$deb not found"; ls out; exit 1; }
+          sum=$(sha256sum "$deb" | cut -d' ' -f1)
+          f=packaging/aur/mosaic-vpn-bin/PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=${ver}/; s/^pkgrel=.*/pkgrel=1/; s/^sha256sums_x86_64=.*/sha256sums_x86_64=('${sum}')/" "$f"
+          grep -E '^(pkgver|pkgrel|sha256sums_x86_64)=' "$f"
+      - uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        if: env.AUR_KEY != ''
+        with:
+          pkgname: mosaic-vpn-bin
+          pkgbuild: packaging/aur/mosaic-vpn-bin/PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update to ${{ github.ref_name }}
+          ssh_keyscan_types: rsa,ecdsa,ed25519
+          test: true

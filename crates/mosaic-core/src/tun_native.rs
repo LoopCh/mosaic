@@ -116,7 +116,7 @@ mod stack {
     use std::net::SocketAddr;
     use std::time::Duration;
 
-    use ipstack::{IpStack, IpStackConfig, IpStackStream};
+    use ipstack::{IpStack, IpStackConfig, IpStackStream, TcpConfig, TcpOptions};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
@@ -125,6 +125,13 @@ mod stack {
     use crate::hub::{self, current};
 
     pub const MTU: u16 = 1500;
+    /// MSS announced to apps in the SYN-ACK. Without it apps fall back to 536 bytes and
+    /// cut every request into small pieces, which some servers do not accept (see
+    /// `complete_tls_record`). 1440 fits IPv4 and IPv6 headers into the 1500 MTU.
+    const MSS: u16 = 1440;
+    /// Receive buffer / unacknowledged data per TCP flow (the stack has no window
+    /// scaling, so 64 KiB is the most a window can say).
+    const TCP_WINDOW: usize = 65535;
     const SNIFF_PORTS: [u16; 4] = [80, 443, 8080, 8443];
 
     /// State shared by all flows: fake-IP table and real answers for node servers.
@@ -189,6 +196,11 @@ mod stack {
         let c = Arc::new(Counters::default());
         let mut cfg = IpStackConfig::default();
         cfg.mtu_unchecked(MTU);
+        let mut tcp_cfg = TcpConfig::default();
+        tcp_cfg.options = Some(vec![TcpOptions::MaximumSegmentSize(MSS)]);
+        tcp_cfg.read_buffer_size = TCP_WINDOW;
+        tcp_cfg.max_unacked_bytes = TCP_WINDOW as u32;
+        cfg.with_tcp_config(tcp_cfg);
         let mut stack = IpStack::new(cfg, Counted { dev, c: c.clone() });
         let dns_state = Arc::new(DnsState { fake: Mutex::new(FakeIpPool::default()), real });
         tokio::spawn(async move {
@@ -216,6 +228,10 @@ mod stack {
                         let (r, s, d, c2, l) = (routing.clone(), stats.clone(), dns_state.clone(), c.clone(), logs.clone());
                         tokio::spawn(async move {
                             if let Err(e) = handle_tcp(tcp, src, dst, r, s, d).await {
+                                // Idle flows closed by the stack are not errors.
+                                if e.kind() == std::io::ErrorKind::TimedOut {
+                                    return;
+                                }
                                 if c2.errors.fetch_add(1, Relaxed) < 20 {
                                     l.push(format!("[tun] tcp {src} → {dst}: {e}"));
                                 }
@@ -228,6 +244,10 @@ mod stack {
                         let (r, s, d, c2, l) = (routing.clone(), stats.clone(), dns_state.clone(), c.clone(), logs.clone());
                         tokio::spawn(async move {
                             if let Err(e) = handle_udp(udp, src, dst, r, s, d).await {
+                                // Idle flows closed by the stack are not errors.
+                                if e.kind() == std::io::ErrorKind::TimedOut {
+                                    return;
+                                }
                                 if c2.errors.fetch_add(1, Relaxed) < 20 {
                                     l.push(format!("[tun] udp {src} → {dst}: {e}"));
                                 }
@@ -259,6 +279,26 @@ mod stack {
         crate::procinfo::flow_owner(src, dst, proto)
     }
 
+    /// If `buf` starts a TLS record (a ClientHello), read until the whole record is
+    /// there. Apps send it in several TCP segments; forwarding the pieces one by one
+    /// makes some servers and middleboxes (SNI routers that look only at the first
+    /// packet) drop the connection — and the SNI may sit beyond the first piece.
+    /// Bounded: 500 ms and 20 KB.
+    async fn complete_tls_record<T: AsyncRead + Unpin>(tcp: &mut T, buf: &mut Vec<u8>) {
+        if buf.len() < 5 || buf[0] != 0x16 || buf[1] != 0x03 {
+            return;
+        }
+        let need = 5 + u16::from_be_bytes([buf[3], buf[4]]) as usize;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+        let mut chunk = vec![0u8; 4096];
+        while buf.len() < need && buf.len() < 20_000 {
+            match tokio::time::timeout_at(deadline, tcp.read(&mut chunk)).await {
+                Ok(Ok(n)) if n > 0 => buf.extend_from_slice(&chunk[..n]),
+                _ => break,
+            }
+        }
+    }
+
     async fn handle_tcp<T>(
         mut tcp: T,
         src: SocketAddr,
@@ -277,6 +317,7 @@ mod stack {
             let mut buf = vec![0u8; 4096];
             if let Ok(Ok(n)) = timeout(Duration::from_millis(300), tcp.read(&mut buf)).await {
                 buf.truncate(n);
+                complete_tls_record(&mut tcp, &mut buf).await;
                 if let Some(h) = crate::sniff::sniff(&buf) {
                     host = h;
                 }
@@ -286,8 +327,34 @@ mod stack {
         let process = flow_process(src, dst, crate::procinfo::Proto::Tcp, &routing);
         let r = current(&routing);
         let (mut up, conn) = hub::connect_target(&host, dst.port(), process.as_deref(), &r, &stats).await?;
+        if first.is_empty() {
+            // Whoever speaks first: if it is the app (TLS, HTTP…), take its first message
+            // whole; if the server talks first (SMTP, FTP…), go straight to relaying.
+            let mut buf = vec![0u8; 4096];
+            let got = tokio::select! {
+                r = tcp.read(&mut buf) => Some(r),
+                _ = up.readable() => None,
+            };
+            match got {
+                Some(Ok(n)) => {
+                    buf.truncate(n);
+                    complete_tls_record(&mut tcp, &mut buf).await;
+                    first = buf;
+                }
+                Some(Err(e)) => {
+                    stats.close(&conn, Some(e.to_string()));
+                    return Err(e);
+                }
+                None => {}
+            }
+        }
         if !first.is_empty() {
-            up.write_all(&first).await?;
+            // One write: the kernel cuts it into full-size segments, as if the app
+            // had connected directly.
+            if let Err(e) = up.write_all(&first).await {
+                stats.close(&conn, Some(e.to_string()));
+                return Err(e);
+            }
             stats.add(&conn, first.len() as u64, true);
         }
         hub::relay(tcp, up, conn, stats).await
@@ -306,6 +373,15 @@ mod stack {
     {
         if dst.port() == 53 {
             return serve_dns(&mut udp, &dns, &routing).await;
+        }
+        // Multicast / broadcast (mDNS, LLMNR, SSDP…) is local-network chatter that has
+        // nowhere to go through a proxy: drop it quietly.
+        let local_only = match dst.ip() {
+            IpAddr::V4(v4) => v4.is_multicast() || v4.is_broadcast() || v4.is_link_local(),
+            IpAddr::V6(v6) => v6.is_multicast() || (v6.segments()[0] & 0xffc0) == 0xfe80,
+        };
+        if local_only {
+            return Ok(());
         }
         let Some(host) = target_host(dst.ip(), &dns) else { return Ok(()) };
         let process = flow_process(src, dst, crate::procinfo::Proto::Udp, &routing);

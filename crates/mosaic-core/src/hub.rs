@@ -24,6 +24,11 @@ use crate::util::LogBuf;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const BUF: usize = 16 * 1024;
+/// A TCP connection with no data in either direction for this long is closed
+/// (same as Xray's default `connIdle`).
+const TCP_IDLE: Duration = Duration::from_secs(300);
+/// After one side has finished sending, the other gets this long without data.
+const TCP_HALF_CLOSED_IDLE: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct Upstream {
@@ -538,23 +543,61 @@ pub async fn connect_target(
     }
 }
 
+/// Last activity of a relayed connection, shared by both directions.
+struct Activity {
+    start: std::time::Instant,
+    last_ms: std::sync::atomic::AtomicU64,
+    half_closed: std::sync::atomic::AtomicBool,
+}
+
+impl Activity {
+    fn new() -> Self {
+        Self { start: std::time::Instant::now(), last_ms: 0.into(), half_closed: false.into() }
+    }
+    fn touch(&self) {
+        self.last_ms.store(self.start.elapsed().as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn idle(&self) -> Duration {
+        let last = self.last_ms.load(std::sync::atomic::Ordering::Relaxed);
+        self.start.elapsed().saturating_sub(Duration::from_millis(last))
+    }
+}
+
 /// Copy both ways between any client stream and the upstream TCP connection.
+/// Idle connections (and half-closed ones whose other side went quiet) are closed,
+/// so sockets do not pile up.
 pub async fn relay<S>(client: S, up: TcpStream, conn: Arc<ConnEntry>, stats: Arc<Stats>) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (cr, cw) = tokio::io::split(client);
     let (ur, uw) = up.into_split();
-    let res = tokio::try_join!(
-        pipe(cr, uw, conn.clone(), stats.clone(), true),
-        pipe(ur, cw, conn.clone(), stats.clone(), false)
-    );
-    let err = res.err().map(|e| e.to_string());
+    let act = Arc::new(Activity::new());
+    let work = async {
+        tokio::try_join!(
+            pipe(cr, uw, conn.clone(), stats.clone(), true, act.clone()),
+            pipe(ur, cw, conn.clone(), stats.clone(), false, act.clone())
+        )
+    };
+    let watchdog = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let limit = if act.half_closed.load(std::sync::atomic::Ordering::Relaxed) { TCP_HALF_CLOSED_IDLE } else { TCP_IDLE };
+            if act.idle() >= limit {
+                return;
+            }
+        }
+    };
+    // Dropping `work` drops both halves of both sockets, which closes them.
+    let err = tokio::select! {
+        r = work => r.err().map(|e| e.to_string()),
+        _ = watchdog => None,
+    };
     stats.close(&conn, err);
     Ok(())
 }
 
-async fn pipe<R, W>(mut r: R, mut w: W, conn: Arc<ConnEntry>, stats: Arc<Stats>, upload: bool) -> io::Result<()>
+async fn pipe<R, W>(mut r: R, mut w: W, conn: Arc<ConnEntry>, stats: Arc<Stats>, upload: bool, act: Arc<Activity>) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -563,10 +606,13 @@ where
     loop {
         let n = r.read(&mut buf).await?;
         if n == 0 {
+            act.half_closed.store(true, std::sync::atomic::Ordering::Relaxed);
+            act.touch();
             let _ = w.shutdown().await;
             return Ok(());
         }
         w.write_all(&buf[..n]).await?;
+        act.touch();
         stats.add(&conn, n as u64, upload);
     }
 }

@@ -1,0 +1,38 @@
+# Maintainer: LoopCh <https://github.com/LoopCh>
+#
+# Repackages the official .deb from GitHub Releases. The version and checksum are
+# filled in automatically by .github/workflows/release.yml on every v* tag.
+
+pkgname=mosaic-vpn-bin
+_pkgname=mosaic-vpn
+pkgver=0.9.2
+pkgrel=1
+pkgdesc="Multi-engine VPN/proxy client (Xray + sing-box) with instant rules, per-app routing and TUN"
+arch=('x86_64')
+url="https://github.com/LoopCh/mosaic"
+license=('GPL-3.0-or-later')
+depends=(
+  'webkit2gtk-4.1'
+  'gtk3'
+  'libayatana-appindicator'   # tray icon
+  'libcap'                    # setcap for TUN without root
+  'polkit'                    # one-time password prompt for that
+  'hicolor-icon-theme'
+)
+optdepends=(
+  'kconfig: system proxy on KDE Plasma (kwriteconfig)'
+)
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+options=('!strip' '!debug')
+source_x86_64=("Mosaic_${pkgver}_amd64.deb::${url}/releases/download/v${pkgver}/Mosaic_${pkgver}_amd64.deb")
+sha256sums_x86_64=('SKIP')
+noextract=("Mosaic_${pkgver}_amd64.deb")
+
+package() {
+  bsdtar -xf "Mosaic_${pkgver}_amd64.deb"
+  bsdtar -xpf data.tar.* -C "$pkgdir"
+
+  # Everything a .deb ships is root-owned already; make sure directories are 755.
+  find "$pkgdir" -type d -exec chmod 755 {} +
+}

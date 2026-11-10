@@ -343,6 +343,8 @@ where
                         let n = match r {
                             Ok(Ok(0)) | Err(_) => return Ok(()),
                             Ok(Ok(n)) => n,
+                            // The TUN stack ends idle UDP flows with TimedOut: a normal end.
+                            Ok(Err(e)) if e.kind() == io::ErrorKind::TimedOut => return Ok(()),
                             Ok(Err(e)) => return Err(e),
                         };
                         sock.send(&buf[..n]).await?;
@@ -364,6 +366,8 @@ where
                         let n = match r {
                             Ok(Ok(0)) | Err(_) => return Ok(()),
                             Ok(Ok(n)) => n,
+                            // The TUN stack ends idle UDP flows with TimedOut: a normal end.
+                            Ok(Err(e)) if e.kind() == io::ErrorKind::TimedOut => return Ok(()),
                             Ok(Err(e)) => return Err(e),
                         };
                         su.send_to_target(host, port, &buf[..n]).await?;

@@ -181,7 +181,7 @@ impl Session {
             }
             let routing = current(&self.shared);
             let decided = routing.decide_full(&host, port, self.process.as_deref()).await;
-            let (decision, rule) = routing.guard_udp(decided, &host, payload);
+            let (decision, rule) = routing.guard_udp(decided, &host, port, self.process.as_deref(), payload);
             let (outbound, engine) = outbound_label(&decision);
             let conn = self.stats.open(&host, port, "udp", self.process.as_deref(), rule, outbound, engine);
             let (target, closed) = match decision {
@@ -316,7 +316,7 @@ where
     };
     first.truncate(n);
     let decided = routing.decide_full(&host, port, process.as_deref()).await;
-    let (decision, rule) = routing.guard_udp(decided, &host, &first);
+    let (decision, rule) = routing.guard_udp(decided, &host, port, process.as_deref(), &first);
     let (outbound, engine) = outbound_label(&decision);
     let conn = stats.open(&host, port, "udp", process.as_deref(), rule, outbound, engine);
     let res = flow_inner(flow, &first, &host, port, decision, &routing, &conn, &stats).await;

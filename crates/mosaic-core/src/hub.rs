@@ -70,6 +70,14 @@ pub struct Routing {
     pub remote_cache: Arc<DnsCache>,
     /// See `Settings::webrtc_protection`.
     pub webrtc_guard: bool,
+    /// For WebRTC events (what the protection did, once a minute per server).
+    pub logs: Option<Arc<LogBuf>>,
+}
+
+/// WebRTC events already logged (per server, once a minute).
+fn stun_seen() -> &'static crate::util::Throttle {
+    static SEEN: std::sync::OnceLock<crate::util::Throttle> = std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
 }
 
 pub type SharedRouting = Arc<RwLock<Arc<Routing>>>;
@@ -90,6 +98,7 @@ impl Routing {
             ip_rule_dns: IpRuleDns::Remote,
             remote_cache: Arc::new(DnsCache::default()),
             webrtc_guard: false,
+            logs: None,
         }
     }
 
@@ -97,16 +106,39 @@ impl Routing {
     /// send direct goes through the active node instead (or is blocked if there is none),
     /// so pages cannot learn the real IP. Calls themselves keep working through the node.
     /// Checks between devices of the local network stay local.
-    pub fn guard_udp(&self, decided: (Decision, String), host: &str, payload: &[u8]) -> (Decision, String) {
+    pub fn guard_udp(&self, decided: (Decision, String), host: &str, port: u16, process: Option<&str>, payload: &[u8]) -> (Decision, String) {
         let local = match host.parse::<IpAddr>() {
             Ok(IpAddr::V4(v4)) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64),
             Ok(IpAddr::V6(v6)) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
             Err(_) => host.ends_with(".local"),
         };
-        if self.webrtc_guard && !local && matches!(decided.0, Decision::Direct) && crate::sniff::is_stun(payload) {
-            return (self.target("proxy"), "WebRTC protection".into());
+        if local || !matches!(decided.0, Decision::Direct) || !crate::sniff::is_stun(payload) {
+            return decided;
         }
-        decided
+        // A STUN request (WebRTC asking "what is my address?", or a call checking a path)
+        // that the rules send direct.
+        let who = process.map(|p| format!("{p} → ")).unwrap_or_default();
+        let say = |msg: String| {
+            if let Some(l) = &self.logs {
+                if stun_seen().allow(&format!("{host}:{port}|{}", self.webrtc_guard), 60_000) {
+                    l.push(msg);
+                }
+            }
+        };
+        if !self.webrtc_guard {
+            say(format!("[webrtc] STUN {who}{host}:{port} goes direct (rule {}): WebRTC protection is off — the page can learn your real IP", decided.1));
+            return decided;
+        }
+        let guarded = self.target("proxy");
+        match &guarded {
+            Decision::Block => say(format!("[webrtc] STUN {who}{host}:{port} blocked by WebRTC protection: no active node to send it through — calls may not connect")),
+            _ => say(format!(
+                "[webrtc] STUN {who}{host}:{port} sent through the node instead of direct (rule {}) by WebRTC protection; \
+                 if calls fail, check that the node supports UDP or turn the protection off",
+                decided.1
+            )),
+        }
+        (guarded, "WebRTC protection".into())
     }
 
     /// Raw DNS exchange through the active node (the query ID is preserved).

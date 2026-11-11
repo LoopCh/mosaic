@@ -697,8 +697,19 @@ mod linux_side {
         let dns: Vec<String> = linux_tun::resolv_nameservers().iter().map(|ip| ip.to_string()).filter(|ip| !bypass.contains(ip)).collect();
         let uid = unsafe { libc::getuid() }.to_string();
         let join = |v: &[String]| if v.is_empty() { "-".to_string() } else { v.join(",") };
-        p.logs.push(format!("[tun] physical interface {phys} (gateway {})", gw.map(|g| g.to_string()).unwrap_or_else(|| "-".into())));
-        let mut child = Command::new(&exe)
+        p.logs.push(format!(
+            "[tun] physical interface {phys} (gateway {}) · {} bypass routes · DNS into the tunnel: {} · kill switch {}",
+            gw.map(|g| g.to_string()).unwrap_or_else(|| "-".into()),
+            bypass.len(),
+            join(&dns),
+            if p.kill_switch { "on (the helper keeps the interface if Mosaic stops)" } else { "off" }
+        ));
+        let mut cmd = Command::new(&exe);
+        if let Some(path) = p.logs.file_path() {
+            // The helper writes there what it did at the end — even after Mosaic is gone.
+            cmd.env("MOSAIC_LOG", path);
+        }
+        let mut child = cmd
             .arg(HELPER_ARG)
             .arg(&uid)
             .arg(&phys)

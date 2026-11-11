@@ -18,6 +18,10 @@
 //!   `clean` removes a left-over interface (the user lifts the kill switch).
 //!
 //! Protocol on stdout: `created`, then `ready`, or `error: …`; `warn: …` lines are logged.
+//!
+//! What it does at the end (stop, hold, Mosaic gone, a signal) is also appended to Mosaic's
+//! log file (`MOSAIC_LOG`): when Mosaic is killed, nobody else is left to say what happened.
+//! SIGTERM/SIGINT/SIGHUP (`pkill`, a closed terminal, logging out) count as "Mosaic is gone".
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
@@ -148,6 +152,87 @@ mod imp {
         let _ = out.flush();
     }
 
+    /// 2026-11-10T05:38:12.345Z (the format of Mosaic's log).
+    fn utc_now() -> String {
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let secs = ms / 1000;
+        let days = (secs / 86_400) as i64;
+        let sod = secs % 86_400;
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", sod / 3600, sod / 60 % 60, sod % 60, ms % 1000)
+    }
+
+    /// Append a line to Mosaic's log file (if Mosaic told us where it is).
+    fn log(level: &str, msg: &str) {
+        let Some(path) = std::env::var_os("MOSAIC_LOG") else { return };
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+            let _ = writeln!(f, "{} {:<5} [tun-helper] {msg}", utc_now(), level.to_uppercase());
+        }
+    }
+
+    enum Event {
+        Line(String),
+        Closed,
+        Signal(i32),
+    }
+
+    /// Stdin lines and termination signals, in one queue. The signals are blocked in every
+    /// thread and taken by `sigwait`, so the helper always gets to clean up (or to hold).
+    /// Children (`ip`, `resolvectl`) start with an empty signal mask (std resets it).
+    fn events() -> std::sync::mpsc::Receiver<Event> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+                libc::sigaddset(&mut set, sig);
+            }
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+            let tx = tx.clone();
+            std::thread::spawn(move || loop {
+                let mut sig: libc::c_int = 0;
+                if libc::sigwait(&set, &mut sig) == 0 && tx.send(Event::Signal(sig)).is_err() {
+                    return;
+                }
+            });
+        }
+        std::thread::spawn(move || {
+            let stdin = std::io::stdin();
+            loop {
+                let mut line = String::new();
+                match stdin.lock().read_line(&mut line) {
+                    Ok(0) | Err(_) => {
+                        let _ = tx.send(Event::Closed);
+                        return;
+                    }
+                    Ok(_) => {
+                        if tx.send(Event::Line(line.trim().to_string())).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        rx
+    }
+
+    fn signal_name(sig: i32) -> &'static str {
+        match sig {
+            libc::SIGTERM => "SIGTERM",
+            libc::SIGINT => "SIGINT",
+            libc::SIGHUP => "SIGHUP",
+            _ => "a signal",
+        }
+    }
+
     /// Arguments: run <uid> <physical-if> <gateway or -> <bypass ips, comma> <dns ips, comma> <ipv6 0|1> [ks]
     pub fn main() {
         let args: Vec<String> = std::env::args().skip(1).collect();
@@ -205,6 +290,7 @@ mod imp {
 
         raise_ambient()?;
         let ip = Ip(which("ip").ok_or("the `ip` command (iproute2) was not found")?);
+        let rx = events();
 
         // An interface left by the previous run (a reconnect or the kill switch after a crash):
         // take it over as it is, so traffic keeps going into it and never leaks. If that is not
@@ -225,10 +311,10 @@ mod imp {
             }
             say("created");
             // Wait for Mosaic to attach to the interface.
-            let mut line = String::new();
-            std::io::stdin().lock().read_line(&mut line).map_err(|e| e.to_string())?;
-            if line.trim() != "go" {
-                return Err("Mosaic did not attach to the interface".into());
+            match rx.recv() {
+                Ok(Event::Line(l)) if l == "go" => {}
+                Ok(Event::Signal(sig)) => return Err(format!("stopped by {} while starting", signal_name(sig))),
+                _ => return Err("Mosaic did not attach to the interface".into()),
             }
             for b in &bypass {
                 let dst = format!("{b}/32");
@@ -274,23 +360,38 @@ mod imp {
                 say("kill switch on: if Mosaic stops unexpectedly, traffic stays blocked");
             }
             say("ready");
-            // Until Mosaic says what to do, or its end of stdin closes (it crashed).
-            let mut line = String::new();
+            log("info", &format!("tunnel up (pid {}, kill switch {})", std::process::id(), if kill_switch { "on" } else { "off" }));
+            // Until Mosaic says what to do, or its end of stdin closes (it crashed / was
+            // killed), or someone stops the helper itself.
+            let gone = |why: &str| {
+                if kill_switch {
+                    log("warn", &format!("{why} — kill switch on: the interface and its routes stay, all traffic is blocked until Mosaic connects again or “Unblock” is pressed"));
+                } else {
+                    log("info", &format!("{why} — kill switch off: removing the interface, traffic goes direct again"));
+                }
+            };
             loop {
-                line.clear();
-                match std::io::stdin().lock().read_line(&mut line) {
-                    Ok(0) | Err(_) => {
+                match rx.recv() {
+                    Ok(Event::Line(l)) if l == "stop" => {
+                        log("info", "Mosaic disconnected: removing the interface");
+                        break;
+                    }
+                    Ok(Event::Line(l)) if l == "hold" => {
+                        log("info", "Mosaic reconnects: the interface stays for the next session");
+                        keep = true;
+                        break;
+                    }
+                    Ok(Event::Line(_)) => {}
+                    Ok(Event::Signal(sig)) => {
+                        gone(&format!("the helper got {}", signal_name(sig)));
                         keep = kill_switch;
                         break;
                     }
-                    Ok(_) => match line.trim() {
-                        "stop" => break,
-                        "hold" => {
-                            keep = true;
-                            break;
-                        }
-                        _ => {}
-                    },
+                    Ok(Event::Closed) | Err(_) => {
+                        gone("Mosaic is gone without a word (crashed or killed)");
+                        keep = kill_switch;
+                        break;
+                    }
                 }
             }
             Ok(())
@@ -304,7 +405,13 @@ mod imp {
             let _ = ip.run(&args);
         }
         // Routes on the interface and its resolved settings go away with it.
-        let _ = ip.run(&["link", "del", TUN_NAME]);
+        match ip.run(&["link", "del", TUN_NAME]) {
+            Ok(()) => log("info", "interface removed"),
+            Err(e) => log("error", &format!("could not remove the interface: {e}")),
+        }
+        if let Err(e) = &res {
+            log("error", e);
+        }
         res
     }
 }

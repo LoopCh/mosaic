@@ -1375,7 +1375,18 @@ const logs = { entries: [], seq: 0, level: 'all', source: '', shown: 0, key: '' 
 const LOG_KEEP = 5000;
 const LEVEL_RANK = { debug: 0, info: 1, warn: 2, error: 3 };
 
+// "Verbose log": every connection goes to the log (opened, closed, rule, result).
+$('#log-verbose').addEventListener('change', async (e) => {
+  const on = e.target.checked;
+  try {
+    await invoke('set_settings', { settings: { ...snap.settings, verbose_log: on } });
+    snap = await invoke('snapshot');
+    toast(t(on ? 'logs.verboseOn' : 'logs.verboseOff'), 'ok', 3000);
+  } catch (err) { e.target.checked = !on; toast(err, 'error'); }
+});
+
 async function pollLogs() {
+  $('#log-verbose').checked = !!(snap && snap.settings.verbose_log);
   const fresh = await invoke('log_entries', { since: logs.seq });
   if (fresh.length) {
     logs.seq = fresh.at(-1).seq;

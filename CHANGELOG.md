@@ -2,6 +2,34 @@
 
 Newest first. Versions before 0.5 cover Windows only.
 
+## 0.11.1 — detailed logs, a kill switch that never pretends
+
+- **Verbose log** (Logs → “every connection”, off by default): every connection is written — app, destination,
+  rule, route (direct / node / engine), how long it lasted, traffic, how it ended. Without it, failures are still
+  logged: a connection that got nothing back leaves one warning per host and error a minute.
+- **WebRTC in the log**: what the protection does with each STUN server (sent through the node, blocked because
+  no node is active, or — with the protection off — sent direct), once a minute per server. At connect the log
+  says whether the protection applies at all: it works only in TUN mode; with a proxy, browsers send WebRTC
+  past Mosaic.
+- **Session summary** at every connect: mode, TUN stack, node, kill switch, WebRTC and DNS protection, QUIC,
+  LAN, final route, DNS servers, rules.
+- **Kill switch, fail-closed on Linux**: with the sing-box adapter it cannot block anything, so Mosaic no longer
+  connects with it on (before, it silently did nothing); use the Mosaic TUN implementation, or turn it off.
+  In proxy modes the log says it is not active.
+- **Kill switch, checked**: after the native TUN is up the routing table itself is checked (IPv4 into the tunnel,
+  IPv6 when the system has IPv6 internet) — if traffic would go around the tunnel, there is no connection, and
+  the routing table goes to the log. At start Mosaic says whether a block from the last session is really in
+  force, and warns if it is gone (after a reboot) or incomplete.
+- **TUN helper**: SIGTERM / SIGINT / SIGHUP (`pkill`, a closed terminal, logging out) are handled like Mosaic
+  dying — the kill switch holds, otherwise everything is cleaned up. What it did at the end is written to
+  `logs/mosaic.log` even when Mosaic is already gone.
+- **Leftovers**: a blocking interface from an earlier session is removed when the new connection does not use
+  Mosaic's TUN (system proxy, sing-box adapter) — before, direct traffic and WebRTC calls stayed broken in
+  those modes. A leftover interface without the kill switch is removed at start.
+- **Diagnostic report**: kill switch state and the routing table (`ip route`, `ip -6 route`, `ip rule`, links) on
+  Linux, the recent failed connections, and the log with connection lines capped so they do not push out the
+  rest. Public IPv6 addresses are now hidden as well.
+
 ## 0.11 — kill switch, grouped connections, diagnostics
 
 - **Kill switch** (Settings → TUN, off by default). If the tunnel goes down without you disconnecting —

@@ -170,6 +170,7 @@ struct Session {
     geo: Arc<GeoData>,
     resolver: Arc<Resolver>,
     remote_cache: Arc<DnsCache>,
+    logs: Arc<LogBuf>,
     #[cfg(windows)]
     dns_guard: Option<crate::wfp::DnsGuard>,
 }
@@ -243,6 +244,57 @@ fn kill_switch_supported(settings: &Settings) -> bool {
     settings.mode == Mode::Tun && (cfg!(windows) || (cfg!(target_os = "linux") && settings.tun_stack == TunStack::Native))
 }
 
+/// Linux, at start: what the kill switch left behind (if anything) and whether it still blocks.
+/// A leftover interface without the kill switch (Mosaic was killed) only swallows traffic,
+/// so it is removed right away.
+#[cfg(target_os = "linux")]
+fn kill_switch_startup_report(armed: bool) -> Vec<String> {
+    let c = crate::linux_tun::route_check();
+    let mut out = Vec::new();
+    match (armed, c.iface) {
+        (true, true) => {
+            out.push("[killswitch] the last session did not end normally (Mosaic was closed or killed while connected): \
+                      traffic stays blocked until you connect or press “Unblock”"
+                .to_string());
+            out.push(format!("[killswitch] state: {}", c.summary()));
+            if c.leak().is_some() {
+                out.push("[killswitch] WARNING: the blocking routes are not complete — traffic is NOT fully blocked".into());
+                out.extend(crate::linux_tun::ip_snapshot().into_iter().map(|l| format!("[killswitch] {l}")));
+            }
+        }
+        (true, false) => out.push(
+            "[killswitch] WARNING: the kill switch was on, but its interface is gone (the computer restarted, or another program \
+             removed it) — traffic is NOT blocked now"
+                .into(),
+        ),
+        (false, true) => {
+            out.push(format!("[tun] an interface 'Mosaic' is left from a session that was killed ({}) — removing it", c.summary()));
+            let res = crate::linux_tun::helper_binary(&engines::bundled_copy_dir()).and_then(|exe| {
+                let o = std::process::Command::new(&exe).arg("clean").output().map_err(|e| e.to_string())?;
+                if o.status.success() {
+                    Ok(())
+                } else {
+                    Err(String::from_utf8_lossy(&o.stdout).trim().trim_start_matches("error: ").to_string())
+                }
+            });
+            match res {
+                Ok(()) => out.push("[tun] leftover interface removed".into()),
+                Err(e) => out.push(format!("[tun] could not remove the leftover interface: {e}")),
+            }
+        }
+        (false, false) => {}
+    }
+    out
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b {
+        "on"
+    } else {
+        "off"
+    }
+}
+
 fn routing_for(st: &State, s: &Session) -> Routing {
     Routing {
         rules: st.rules.clone(),
@@ -257,6 +309,7 @@ fn routing_for(st: &State, s: &Session) -> Routing {
         ip_rule_dns: st.settings.ip_rule_dns,
         remote_cache: s.remote_cache.clone(),
         webrtc_guard: st.settings.webrtc_protection && s.mode == Mode::Tun,
+        logs: Some(s.logs.clone()),
     }
 }
 
@@ -421,7 +474,7 @@ impl Controller {
         let _ = std::fs::create_dir_all(dir.join("run"));
         let kill_armed = dir.join(KILL_FLAG).exists();
         let mut state = store::load_state(&dir);
-        let logs = Arc::new(LogBuf::new(3000));
+        let logs = Arc::new(LogBuf::new(5000));
         logs.set_file(&dir.join("logs"));
         logs.push(format!(
             "[app] Mosaic {} started · {} · data {}",
@@ -467,9 +520,23 @@ impl Controller {
             }
         }
         let close_to_tray = AtomicBool::new(state.settings.close_to_tray);
+        let stats = Arc::new(Stats::default());
+        stats.set_logs(logs.clone());
+        stats.set_verbose(state.settings.verbose_log);
+        if state.settings.verbose_log {
+            logs.push("[app] verbose log is on: every connection is written to the log");
+        }
+        #[cfg(target_os = "linux")]
+        for l in kill_switch_startup_report(kill_armed) {
+            logs.push(l);
+        }
+        #[cfg(windows)]
+        if kill_armed {
+            logs.push("[killswitch] the last session did not end normally: the block (firewall filters) stays until you connect or press “Unblock”");
+        }
         Self {
             inner: Mutex::new(Inner { state, session: None, latency: HashMap::new() }),
-            stats: Arc::new(Stats::default()),
+            stats,
             logs,
             close_to_tray,
             smart_kick: AtomicBool::new(true),
@@ -746,9 +813,40 @@ impl Controller {
             *kinds.entry(format!("{:?}→{}", rule.kind, rule.target)).or_default() += 1;
         }
         let _ = writeln!(r, "rules: {}", kinds.iter().map(|(k, n)| format!("{k} ×{n}")).collect::<Vec<_>>().join(", "));
-        let _ = writeln!(r, "\n## Log (latest {} lines)", self.logs.since(0).len().min(1500));
+        let _ = writeln!(r, "\n## Kill switch and routes");
+        let _ = writeln!(r, "marker: {} · setting {} · mode {:?} · stack {:?}", self.dir.join(KILL_FLAG).exists(), snap.settings.kill_switch, snap.settings.mode, snap.settings.tun_stack);
+        #[cfg(target_os = "linux")]
+        {
+            let _ = writeln!(r, "{}", crate::linux_tun::route_check().summary());
+            for l in crate::linux_tun::ip_snapshot() {
+                let _ = writeln!(r, "{l}");
+            }
+        }
+        let errors = self.stats.recent_errors(40);
+        let _ = writeln!(r, "\n## Recent failed connections ({})", errors.len());
+        for c in &errors {
+            let _ = writeln!(
+                r,
+                "{} {} {}→ {}:{} · rule {} → {} · {}",
+                crate::util::fmt_utc(c.started_ms),
+                c.network,
+                c.process.as_deref().map(|p| format!("{p} ")).unwrap_or_default(),
+                c.host,
+                c.port,
+                c.rule,
+                c.outbound,
+                c.error.clone().unwrap_or_default()
+            );
+        }
+        // The log: the per-connection lines ("verbose log") are capped, so they do not push
+        // out what happened to the hub, the engines and the TUN.
         let entries = self.logs.since(0);
-        for e in entries.iter().skip(entries.len().saturating_sub(1500)) {
+        let conn: Vec<u64> = entries.iter().filter(|e| e.source == "conn").map(|e| e.seq).collect();
+        let keep_conn: std::collections::HashSet<u64> = conn.iter().skip(conn.len().saturating_sub(400)).copied().collect();
+        let picked: Vec<&crate::util::LogEntry> = entries.iter().filter(|e| e.source != "conn" || keep_conn.contains(&e.seq)).collect();
+        let picked = &picked[picked.len().saturating_sub(2000)..];
+        let _ = writeln!(r, "\n## Log (latest {} lines)", picked.len());
+        for e in picked {
             let _ = writeln!(r, "{} {:<5} [{}] {}", crate::util::fmt_utc(e.ts), e.level.to_uppercase(), e.source, e.msg);
         }
         crate::diag::redact(&r, &secrets)
@@ -1315,6 +1413,7 @@ impl Controller {
                 }
             }
             self.close_to_tray.store(new.close_to_tray, Relaxed);
+            self.stats.set_verbose(new.verbose_log);
             // What changed, for the log (a frequent first question when something broke).
             if let (Ok(Value::Object(a)), Ok(Value::Object(b))) = (serde_json::to_value(&old), serde_json::to_value(&new)) {
                 let changed: Vec<String> = b
@@ -1603,6 +1702,16 @@ impl Controller {
             }
         }
         let tun = settings.mode == Mode::Tun;
+        // Kill switch on, but with a TUN that cannot hold it: refuse (fail-closed) — otherwise
+        // the switch looks on while nothing would be blocked if Mosaic stopped.
+        if tun && settings.kill_switch && !cfg!(target_os = "android") && !kill_switch_supported(&settings) {
+            let e = "the kill switch works on Linux only with Mosaic's own TUN stack, not with the sing-box adapter";
+            self.logs.error(format!("[killswitch] cannot connect: {e}"));
+            return Err(format!(
+                "Kill switch: {e}.\n\nNot connected, so that nothing leaks unnoticed. In Settings choose “TUN implementation: Mosaic TUN”, \
+                 or turn the kill switch off."
+            ));
+        }
         #[cfg(target_os = "linux")]
         if tun {
             // Linux, both stacks: the program that creates the interface gets a file capability
@@ -1628,6 +1737,43 @@ impl Controller {
             return Err("This build has no native TUN stack. Switch the TUN stack to sing-box in Settings, or use the build with the native-tun feature.".into());
         }
         self.logs.push("[hub] connecting…");
+        {
+            let st = &g.state;
+            let node = st.selected.as_ref().and_then(|id| st.nodes.iter().find(|n| &n.id == id)).map(|n| n.name.clone()).unwrap_or_else(|| "none".into());
+            let ks = if !settings.kill_switch {
+                "off"
+            } else if cfg!(target_os = "android") {
+                "Android system setting"
+            } else if tun {
+                "on"
+            } else {
+                "on in settings, not used outside TUN"
+            };
+            self.logs.push(format!(
+                "[hub] session: mode {:?}{} · node {node} · kill switch {ks} · WebRTC protection {} · DNS leak protection {} · \
+                 block QUIC {} · LAN {} · final → {} · direct DNS {} · remote DNS {} · rules {} on · smart connect {} · verbose log {}",
+                settings.mode,
+                if tun { format!(" ({:?} stack)", settings.tun_stack) } else { String::new() },
+                on_off(settings.webrtc_protection),
+                on_off(settings.dns_leak_protection),
+                on_off(settings.block_quic),
+                on_off(settings.allow_lan),
+                settings.final_target,
+                settings.direct_dns,
+                settings.remote_dns,
+                st.rules.iter().filter(|r| r.enabled).count(),
+                on_off(settings.smart_connect),
+                on_off(settings.verbose_log),
+            ));
+        }
+        // Linux: a blocking interface from an earlier session (the kill switch, or Mosaic was
+        // killed) is taken over only by Mosaic's own TUN; anything else must remove it first,
+        // or it keeps swallowing traffic that should go direct.
+        #[cfg(target_os = "linux")]
+        if !(tun && settings.tun_stack == TunStack::Native) && std::path::Path::new("/sys/class/net/Mosaic").exists() {
+            self.logs.push("[killswitch] removing the blocking 'Mosaic' interface left from an earlier session (this connection does not use Mosaic's TUN stack)");
+            self.release_kill_switch_os();
+        }
         // Linux, kill switch in force: the old interface still takes all traffic, so Mosaic's
         // own lookups and connections must go around it from the start.
         #[cfg(target_os = "linux")]
@@ -1699,6 +1845,7 @@ impl Controller {
             geo,
             resolver,
             remote_cache: Arc::new(DnsCache::default()),
+            logs: self.logs.clone(),
             #[cfg(windows)]
             dns_guard: None,
         };
@@ -1758,6 +1905,27 @@ impl Controller {
             self.teardown(s).await;
             return Err(e);
         }
+        // Linux, own TUN: check the routing table itself — the helper may have hit something
+        // (another VPN, IPv6 disabled on the interface) and the browser would quietly go around.
+        #[cfg(target_os = "linux")]
+        if tun && settings.tun_stack == TunStack::Native {
+            let c = crate::linux_tun::route_check();
+            self.logs.push(format!("[tun] routes: {}", c.summary()));
+            if let Some(e) = c.leak() {
+                self.logs.error(format!("[tun] {e}"));
+                for l in crate::linux_tun::ip_snapshot() {
+                    self.logs.push(format!("[tun] {l}"));
+                }
+                self.teardown(s).await;
+                return Err(format!("TUN: {e}.\n\nNot connected, so that traffic does not leak. The routing table is in the log."));
+            }
+            if settings.kill_switch && !c.linkdown_ignored.is_empty() {
+                self.logs.warn(format!(
+                    "[killswitch] {} is set: if Mosaic is killed, the system may skip the blocked routes and traffic would leak",
+                    c.linkdown_ignored.join(", ")
+                ));
+            }
+        }
         // DNS leak protection is fail-closed: if it cannot be put in place, or the system's
         // DNS does not go through the tunnel with it, there is no connection — a VPN that
         // silently leaks DNS is worse than one that refuses to connect.
@@ -1793,6 +1961,17 @@ impl Controller {
             }
         }
         self.stats.clear_closed();
+        self.logs.push(match (tun, settings.webrtc_protection) {
+            (true, true) => "[webrtc] protection on: STUN requests that rules send direct go through the node",
+            (true, false) => "[webrtc] protection off: WebRTC in browsers can reveal the real IP",
+            (false, true) => {
+                "[webrtc] protection is on, but works only in TUN mode: with a proxy, browsers send WebRTC (UDP) directly, past Mosaic"
+            }
+            (false, false) => "[webrtc] protection off (and it works only in TUN mode)",
+        });
+        if settings.kill_switch && !tun && !cfg!(target_os = "android") {
+            self.logs.warn("[killswitch] not active: it works only in TUN mode");
+        }
         self.logs.push("[hub] connected");
         g.session = Some(s);
         Ok(())

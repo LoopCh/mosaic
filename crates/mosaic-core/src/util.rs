@@ -118,6 +118,19 @@ impl LogBuf {
         self.record("warn", source, msg);
     }
 
+    /// Detail lines (the connection journal with "verbose log" on).
+    pub fn debug(&self, line: impl Into<String>) {
+        let line = line.into();
+        let (source, msg) = split_tag(&line);
+        self.record("debug", source, msg);
+    }
+
+    /// The log file (`logs/mosaic.log`), once `set_file` was called. The Linux TUN helper
+    /// appends its own lines to it — they matter most when Mosaic itself is gone.
+    pub fn file_path(&self) -> Option<std::path::PathBuf> {
+        self.file.lock().unwrap().as_ref().map(|f| f.path.clone())
+    }
+
     pub fn error(&self, line: impl Into<String>) {
         let line = line.into();
         let (source, msg) = split_tag(&line);
@@ -177,6 +190,28 @@ impl LogBuf {
             g.0.iter().rev().map(|e| format!("[{}] {}", e.source, e.msg)).filter(|l| l.contains(needle)).take(n).collect();
         v.reverse();
         v
+    }
+}
+
+/// "Say this at most once per window": repeated events (the same STUN server, the same
+/// failing host) leave one line in the log instead of hundreds.
+#[derive(Default)]
+pub struct Throttle(Mutex<std::collections::HashMap<String, u64>>);
+
+impl Throttle {
+    pub fn allow(&self, key: &str, window_ms: u64) -> bool {
+        let now = now_ms();
+        let mut g = self.0.lock().unwrap();
+        if g.len() > 2000 {
+            g.retain(|_, t| now.saturating_sub(*t) < window_ms);
+        }
+        match g.get(key) {
+            Some(t) if now.saturating_sub(*t) < window_ms => false,
+            _ => {
+                g.insert(key.to_string(), now);
+                true
+            }
+        }
     }
 }
 

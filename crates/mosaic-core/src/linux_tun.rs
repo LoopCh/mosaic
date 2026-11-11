@@ -98,3 +98,99 @@ pub fn open_tun(name: &str) -> std::io::Result<std::os::fd::OwnedFd> {
 }
 
 
+
+// ---------------------------------------------------------------- checks (for the log)
+
+/// What the routing table says about the tunnel: are the "everything into Mosaic" routes
+/// in place, and would IPv6 go around them?
+#[derive(Debug, Default)]
+pub struct RouteCheck {
+    /// The interface exists.
+    pub iface: bool,
+    /// Its state ("up", "down", "unknown" — a TUN nobody reads is "down").
+    pub operstate: String,
+    /// 0.0.0.0/1 and 128.0.0.0/1 → Mosaic.
+    pub v4: bool,
+    /// ::/1 and 8000::/1 → Mosaic.
+    pub v6: bool,
+    /// The system has an IPv6 default route of its own (IPv6 internet).
+    pub v6_system: bool,
+    /// `ignore_routes_with_linkdown` is set somewhere: routes into a TUN nobody reads
+    /// would be skipped, so the kill switch would not hold after a crash.
+    pub linkdown_ignored: Vec<String>,
+}
+
+impl RouteCheck {
+    pub fn summary(&self) -> String {
+        if !self.iface {
+            return "interface 'Mosaic' is absent".into();
+        }
+        let v6 = match (self.v6, self.v6_system) {
+            (true, _) => "IPv6 → Mosaic",
+            (false, true) => "IPv6 NOT routed into Mosaic (the system has IPv6 internet)",
+            (false, false) => "no IPv6 internet",
+        };
+        format!(
+            "interface 'Mosaic' {} · IPv4 {} · {v6}{}",
+            self.operstate,
+            if self.v4 { "0/1 + 128/1 → Mosaic" } else { "routes into Mosaic MISSING" },
+            if self.linkdown_ignored.is_empty() { String::new() } else { format!(" · {} = 1", self.linkdown_ignored.join(", ")) }
+        )
+    }
+
+    /// Traffic that would go around the tunnel right now.
+    pub fn leak(&self) -> Option<String> {
+        if !self.iface || !self.v4 {
+            return Some("the routes that send traffic into the tunnel are missing — traffic would go around it".into());
+        }
+        if self.v6_system && !self.v6 {
+            return Some("IPv6 traffic is not routed into the tunnel, and this system has IPv6 internet — it would go around the tunnel".into());
+        }
+        None
+    }
+}
+
+pub fn route_check() -> RouteCheck {
+    let sys = Path::new("/sys/class/net").join(TUN_NAME);
+    let mut c = RouteCheck { iface: sys.exists(), ..Default::default() };
+    c.operstate = std::fs::read_to_string(sys.join("operstate")).map(|s| s.trim().to_string()).unwrap_or_default();
+    let v4 = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
+    let has4 = |dst: &str| {
+        v4.lines().skip(1).any(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            f.len() >= 8 && f[0] == TUN_NAME && f[1] == dst && f[7] == "00000080"
+        })
+    };
+    c.v4 = has4("00000000") && has4("00000080");
+    let v6 = std::fs::read_to_string("/proc/net/ipv6_route").unwrap_or_default();
+    let rows: Vec<Vec<&str>> = v6.lines().map(|l| l.split_whitespace().collect::<Vec<_>>()).filter(|f| f.len() >= 10).collect();
+    let has6 = |dst: &str| rows.iter().any(|f| f[9] == TUN_NAME && f[0] == dst && f[1] == "01");
+    c.v6 = has6("00000000000000000000000000000000") && has6("80000000000000000000000000000000");
+    c.v6_system = rows.iter().any(|f| f[1] == "00" && f[0] == "00000000000000000000000000000000" && f[9] != "lo" && f[9] != TUN_NAME);
+    for fam in ["ipv4", "ipv6"] {
+        for dev in ["all", TUN_NAME] {
+            let p = format!("/proc/sys/net/{fam}/conf/{dev}/ignore_routes_with_linkdown");
+            if std::fs::read_to_string(&p).map(|v| v.trim() == "1").unwrap_or(false) {
+                c.linkdown_ignored.push(format!("net.{fam}.conf.{dev}.ignore_routes_with_linkdown"));
+            }
+        }
+    }
+    c
+}
+
+/// `ip route`, `ip -6 route` and `ip rule` as text (for the log and the diagnostic report:
+/// other VPNs, Tailscale and policy routing show up here).
+pub fn ip_snapshot() -> Vec<String> {
+    let Some(ip) = ["/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip", "/bin/ip"].iter().map(Path::new).find(|p| p.is_file()) else {
+        return vec!["`ip` (iproute2) not found".into()];
+    };
+    let mut out = Vec::new();
+    for args in [&["-4", "route", "show"][..], &["-6", "route", "show"][..], &["rule", "show"][..], &["-br", "link", "show"][..]] {
+        out.push(format!("$ ip {}", args.join(" ")));
+        match std::process::Command::new(ip).args(args).output() {
+            Ok(o) => out.extend(String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.trim().is_empty()).map(|l| format!("  {l}"))),
+            Err(e) => out.push(format!("  {e}")),
+        }
+    }
+    out
+}

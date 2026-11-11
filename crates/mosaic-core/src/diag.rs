@@ -74,7 +74,42 @@ pub fn redact(text: &str, secrets: &[(String, String)]) -> String {
             out = out.replace(s.as_str(), p);
         }
     }
-    redact_public_ipv4(&out)
+    redact_public_ipv6(&redact_public_ipv4(&out))
+}
+
+/// Global IPv6 addresses (2000::/3, outside the documentation range) → "<ipv6>": routes and
+/// interface addresses carry the provider's prefix, which identifies the user like an IPv4.
+fn redact_public_ipv6(text: &str) -> String {
+    let b = text.as_bytes();
+    let is_part = |c: u8| c.is_ascii_hexdigit() || c == b':';
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < b.len() {
+        if is_part(b[i]) && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b':' || b[i - 1] == b'.')) {
+            let mut j = i;
+            while j < b.len() && is_part(b[j]) {
+                j += 1;
+            }
+            let cand = &text[i..j];
+            let followed_ok = j >= b.len() || !(b[j].is_ascii_alphanumeric() || b[j] == b'.');
+            if followed_ok && cand.matches(':').count() >= 2 {
+                if let Ok(ip) = cand.parse::<std::net::Ipv6Addr>() {
+                    let seg = ip.segments();
+                    let global = (seg[0] & 0xe000) == 0x2000 && !(seg[0] == 0x2001 && seg[1] == 0x0db8);
+                    out.push_str(if global { "<ipv6>" } else { cand });
+                    i = j;
+                    continue;
+                }
+            }
+            out.push_str(cand);
+            i = j;
+            continue;
+        }
+        let ch = text[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// Public IPv4 addresses → "<ip>"; private, loopback, link-local, CGNAT, the fake-IP range
@@ -214,6 +249,15 @@ mod tests {
         assert_eq!(redact_public_ipv4("Xray 26.11.9 started"), "Xray 26.11.9 started");
         assert_eq!(redact_public_ipv4("ip 203.0.113.7."), "ip 203.0.113.7.");
         assert_eq!(redact_public_ipv4("Привет 5.6.7.8!"), "Привет <ip>!");
+    }
+
+    #[test]
+    fn ipv6() {
+        assert_eq!(
+            redact_public_ipv6("2a02:a31a:4040:1::/64 dev wlan0, ::/1 dev Mosaic, fe80::1, 2001:db8::5, at 08:14:00, [2a00:1450:4001::8a]:443"),
+            "<ipv6>/64 dev wlan0, ::/1 dev Mosaic, fe80::1, 2001:db8::5, at 08:14:00, [<ipv6>]:443"
+        );
+        assert_eq!(redact_public_ipv6("8000::/1 dev Mosaic, cafe:: beef"), "8000::/1 dev Mosaic, cafe:: beef");
     }
 
     #[test]

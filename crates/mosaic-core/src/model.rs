@@ -443,6 +443,9 @@ pub struct Settings {
     /// TUN: if the tunnel goes down without the user disconnecting (Mosaic crashed, a
     /// reconnect failed), block all traffic outside it instead of letting it leak.
     pub kill_switch: bool,
+    /// Logs: one line per connection (opened / closed, rule, result) — for finding out why
+    /// a site or a call does not work. Off by default: it is a lot of lines.
+    pub verbose_log: bool,
 }
 
 impl Default for Settings {
@@ -473,6 +476,7 @@ impl Default for Settings {
             apps: Vec::new(),
             webrtc_protection: true,
             kill_switch: false,
+            verbose_log: false,
         }
     }
 }

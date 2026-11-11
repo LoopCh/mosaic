@@ -7,6 +7,7 @@ on:
       - '**.md'
       - 'docs/**'
       - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
       - 'android/**'
       - 'scripts/*.sh'
   pull_request:
@@ -14,6 +15,7 @@ on:
       - '**.md'
       - 'docs/**'
       - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
       - 'android/**'
       - 'scripts/*.sh'
   workflow_dispatch:

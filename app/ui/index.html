@@ -57,6 +57,7 @@
 
         <div class="home-right">
           <button class="card node-card" id="current-node"></button>
+          <div class="card routes-card hidden" id="routes"></div>
           <div class="card mode-card">
             <div class="seg" id="mode-seg">
               <button data-mode="system_proxy" data-i18n="mode.proxy" class="desktop-only"></button>
@@ -112,12 +113,12 @@
         </div>
         <div class="proxy-form hidden" id="proxy-form">
           <div class="px-grid">
-            <label><span class="muted small" data-i18n="px.type"></span>
+            <label class="px-type"><span class="muted small" data-i18n="px.type"></span>
               <select id="px-type"><option value="socks5">SOCKS5</option><option value="http">HTTP</option><option value="https">HTTPS</option></select></label>
             <label class="px-host"><span class="muted small" data-i18n="px.host"></span><input id="px-host" spellcheck="false" placeholder="pl.example.com" /></label>
-            <label><span class="muted small" data-i18n="px.port"></span><input id="px-port" inputmode="numeric" placeholder="1080" /></label>
-            <label class="px-cred"><span class="muted small" data-i18n="px.user"></span><input id="px-user" spellcheck="false" autocomplete="off" data-i18n-ph="px.optional" /></label>
-            <label class="px-cred"><span class="muted small" data-i18n="px.pass"></span><input id="px-pass" type="password" autocomplete="new-password" data-i18n-ph="px.optional" /></label>
+            <label class="px-port"><span class="muted small" data-i18n="px.port"></span><input id="px-port" inputmode="numeric" placeholder="1080" /></label>
+            <label class="px-cred px-user"><span class="muted small" data-i18n="px.user"></span><input id="px-user" spellcheck="false" autocomplete="off" data-i18n-ph="px.optional" /></label>
+            <label class="px-cred px-pass"><span class="muted small" data-i18n="px.pass"></span><input id="px-pass" type="password" autocomplete="new-password" data-i18n-ph="px.optional" /></label>
             <label class="px-name"><span class="muted small" data-i18n="px.name"></span><input id="px-name" data-i18n-ph="px.namePh" /></label>
           </div>
           <div class="row">

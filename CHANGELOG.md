@@ -2,6 +2,28 @@
 
 Newest first. Versions before 0.5 cover Windows only.
 
+## 0.11.5 — routes on Home, watching the nodes rules use
+
+- **Routes on Home**: when rules send traffic to more than one node, Home lists them — the active node and every
+  node a rule (or “everything else”) uses, with what goes there (`geosite:youtube, googlevideo.com and 1 more`)
+  and, while connected, whether it answers. A click on the state checks that node; hovering shows the error.
+- **Nodes used by rules are watched**, not only the active one: every 20 s, right after connecting, and at once
+  when real traffic through a node keeps failing (three new connections in a row with nothing back). Two failed
+  checks in a row = “does not answer”.
+- **When one of them stops answering**: Home says “Not everything works — ‘Germany’ does not answer: geosite:netflix,
+  … do not work; this traffic is blocked, it does not go around the VPN”, with “Check again” and “Rules”; the tray
+  icon turns yellow and its tooltip names the node; the log gets a line, and another when it answers again.
+  Nothing else is blocked — the kill switch stays what it is (protection when Mosaic or the tunnel is down).
+- Real traffic also wakes the check of the active node: failing connections trigger it right away instead of
+  waiting up to 20 s.
+- Rules that point to a deleted node are shown as such (their traffic is blocked).
+- The diagnostic report lists the routes and their state.
+- **Android**: the VPN notification is the status line here — when the server or a node some rules use stops
+  answering, it says so (“Connected · not everything works — does not answer: Germany …”) and goes back when it
+  answers again. Phones have no hover: errors are written under the node (node list, routes) instead of a hover
+  card, and a tap (which checks the node) no longer leaves a card stuck on the screen. The proxy form is laid out
+  for narrow screens (type + port, server, login + password).
+
 ## 0.11.4 — testing nodes added while connected, one-node test
 
 - **Fixed: nodes added while connected** failed the latency test with “engine did not start” until Mosaic was

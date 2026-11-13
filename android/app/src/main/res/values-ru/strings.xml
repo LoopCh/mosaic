@@ -3,6 +3,9 @@
     <string name="notif_vpn">Подключено · VPN</string>
     <string name="notif_proxy">Подключено · локальный прокси 127.0.0.1:%1$d</string>
     <string name="notif_text">Нажмите, чтобы открыть Mosaic</string>
+    <string name="notif_partial">Подключено · работает не всё</string>
+    <string name="notif_main_down">«%1$s» не отвечает — трафик не проходит.</string>
+    <string name="notif_routes_down">Не отвечает: %1$s. Сайты из его правил заблокированы (мимо VPN они не идут).</string>
     <string name="disconnect">Отключить</string>
     <string name="no_permission">Разрешение на VPN не выдано</string>
 </resources>

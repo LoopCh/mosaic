@@ -4,6 +4,9 @@
     <string name="notif_vpn">Connected · VPN</string>
     <string name="notif_proxy">Connected · local proxy 127.0.0.1:%1$d</string>
     <string name="notif_text">Tap to open Mosaic</string>
+    <string name="notif_partial">Connected · not everything works</string>
+    <string name="notif_main_down">“%1$s” does not answer — traffic is not getting through.</string>
+    <string name="notif_routes_down">Does not answer: %1$s. The sites its rules send there are blocked (not sent around the VPN).</string>
     <string name="disconnect">Disconnect</string>
     <string name="no_permission">VPN permission was not granted</string>
 </resources>

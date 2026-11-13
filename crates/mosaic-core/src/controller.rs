@@ -59,6 +59,90 @@ pub struct Health {
     pub ms: Option<u32>,
 }
 
+/// A node the routing uses: the active one, and every node a rule (or "everything else")
+/// sends traffic to. Shown on Home, with its state while connected.
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteView {
+    pub id: String,
+    pub name: String,
+    /// The active node: rules "→ active node" follow it.
+    pub main: bool,
+    /// What the rules send there ("youtube.com", "geosite:netflix", "app telegram.exe" …).
+    pub rules: Vec<String>,
+    /// "Everything else" (the final rule) goes there.
+    pub everything_else: bool,
+    /// "ok", "down" or "unknown" (not connected / not checked yet).
+    pub state: &'static str,
+    pub ms: Option<u32>,
+    pub error: Option<String>,
+}
+
+/// Health of a node used by rules (the active node has `Health`).
+#[derive(Debug, Clone, Default)]
+struct RouteHealth {
+    state: &'static str,
+    ms: Option<u32>,
+    error: Option<String>,
+    /// Failed checks in a row; "down" from two.
+    fails: u32,
+}
+
+/// What a rule looks like in one word.
+fn rule_label(r: &Rule) -> String {
+    match r.kind {
+        RuleKind::Domain | RuleKind::DomainSuffix | RuleKind::IpCidr => r.value.clone(),
+        RuleKind::DomainKeyword => format!("*{}*", r.value),
+        RuleKind::Port => format!("port {}", r.value),
+        RuleKind::Geoip => format!("geoip:{}", r.value),
+        RuleKind::Geosite => format!("geosite:{}", r.value),
+        RuleKind::ProcessName => format!("app {}", r.value),
+    }
+}
+
+/// "2 rule(s) (netflix.com, geosite:netflix)", "everything else" — for the log.
+fn route_what(rules: &[String], everything_else: bool) -> String {
+    let mut shown: Vec<String> = rules.iter().take(3).cloned().collect();
+    if rules.len() > 3 {
+        shown.push(format!("+{}", rules.len() - 3));
+    }
+    let mut text = if rules.is_empty() { String::new() } else { format!("{} rule(s) ({})", rules.len(), shown.join(", ")) };
+    if everything_else {
+        text = if text.is_empty() { "everything else".into() } else { format!("{text} and everything else") };
+    }
+    text
+}
+
+/// The nodes the routing uses, the active one first: (id, rules, everything else).
+fn used_nodes(st: &State) -> Vec<(String, Vec<String>, bool)> {
+    let mut out: Vec<(String, Vec<String>, bool)> = Vec::new();
+    let main = st.selected.clone().filter(|id| st.nodes.iter().any(|n| &n.id == id));
+    if let Some(id) = &main {
+        out.push((id.clone(), Vec::new(), false));
+    }
+    let slot = |target: &str, out: &mut Vec<(String, Vec<String>, bool)>| -> Option<usize> {
+        let id = match target {
+            "proxy" => main.clone()?,
+            t => t.strip_prefix("node:")?.to_string(),
+        };
+        Some(match out.iter().position(|(x, _, _)| *x == id) {
+            Some(i) => i,
+            None => {
+                out.push((id, Vec::new(), false));
+                out.len() - 1
+            }
+        })
+    };
+    for r in st.rules.iter().filter(|r| r.enabled) {
+        if let Some(i) = slot(&r.target, &mut out) {
+            out[i].1.push(rule_label(r));
+        }
+    }
+    if let Some(i) = slot(&st.settings.final_target, &mut out) {
+        out[i].2 = true;
+    }
+    out
+}
+
 #[derive(Debug, Serialize)]
 pub struct NodeView {
     #[serde(flatten)]
@@ -87,6 +171,8 @@ pub struct Status {
     /// DNS leak protection (WFP filters) is active.
     pub dns_protected: bool,
     pub health: Health,
+    /// The active node and the nodes rules send traffic to, with their state.
+    pub routes: Vec<RouteView>,
     /// "off", "armed" (connected, protected) or "blocking" (not connected — traffic is blocked
     /// until Mosaic connects again or the user lifts the block).
     pub kill_switch: &'static str,
@@ -219,6 +305,9 @@ pub struct Controller {
     tun_fd: std::sync::Mutex<Option<i32>>,
     progress: std::sync::Mutex<Progress>,
     health: std::sync::Mutex<Health>,
+    /// Nodes used by rules (not the active one): their health while connected.
+    route_health: std::sync::Mutex<HashMap<String, RouteHealth>>,
+
     /// The kill switch is in force (filters / held interface). Mirrored in `killswitch.armed`
     /// in the data folder, so a restart after a crash knows traffic is blocked.
     kill_armed: AtomicBool,
@@ -550,6 +639,8 @@ impl Controller {
             tun_fd: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(Progress::default()),
             health: std::sync::Mutex::new(Health { state: "unknown", ..Default::default() }),
+            route_health: std::sync::Mutex::new(HashMap::new()),
+
             kill_armed: AtomicBool::new(kill_armed),
             dir,
             // "TUN is possible": Android asks for the VPN permission, Linux grants a capability
@@ -701,6 +792,7 @@ impl Controller {
                 (true, false) => "blocking",
             },
             health: if s.is_some() { self.health.lock().unwrap().clone() } else { Health { state: "unknown", ..Default::default() } },
+            routes: self.routes_view(st, s.is_some()),
         };
         let engine_infos = EngineKind::ALL
             .iter()
@@ -780,6 +872,18 @@ impl Controller {
             st.connected, st.mode, st.tun_stack, st.tun, st.system_proxy, st.dns_protected
         );
         let _ = writeln!(r, "health: {} {:?} {}", st.health.state, st.health.ms, st.health.error.clone().unwrap_or_default());
+        for rt in &st.routes {
+            let _ = writeln!(
+                r,
+                "route: {}{} · {} · {:?} ms · {} · {}",
+                rt.name,
+                if rt.main { " (active)" } else { "" },
+                rt.state,
+                rt.ms,
+                route_what(&rt.rules, rt.everything_else),
+                rt.error.clone().unwrap_or_default()
+            );
+        }
         let _ = writeln!(r, "kill switch: {} · active connections {} · up {} B · down {} B", st.kill_switch, st.active_conns, st.up, st.down);
         let _ = writeln!(r, "\n## Engines");
         for e in &snap.engines {
@@ -1349,11 +1453,147 @@ impl Controller {
                 self.smart_tick(&settings, tick, &mut fails, &mut last_full).await;
             } else {
                 last_full = None;
+                // Real traffic through the active node keeps failing: check it now.
+                if let Some(name) = self.active_node_name().await {
+                    if self.stats.node_fails(&name) >= 3 {
+                        self.stats.take_node_fails(&name);
+                        self.check_kick.store(true, Relaxed);
+                    }
+                }
                 if tick % 2 == 0 || self.check_kick.swap(false, Relaxed) {
                     self.health_tick(&settings, &mut fails).await;
                 }
             }
+            self.routes_tick(&settings, tick).await;
         }
+    }
+
+    async fn active_node_name(&self) -> Option<String> {
+        let g = self.inner.lock().await;
+        let s = g.session.as_ref()?;
+        g.state.selected.as_ref().and_then(|id| s.upstreams.get(id)).map(|u| u.name.clone())
+    }
+
+    /// The nodes rules send traffic to (besides the active one, which `health_tick` watches):
+    /// every 20 s, right after connecting, and at once when their real traffic keeps failing.
+    /// A node that fails twice in a row is "down": Home shows which rules stopped working.
+    /// Their traffic is blocked then, not sent around the VPN — that is how routing works.
+    async fn routes_tick(&self, settings: &Settings, tick: u64) {
+        let (used, upstreams, selected, names) = {
+            let g = self.inner.lock().await;
+            let Some(s) = g.session.as_ref() else { return };
+            let names: HashMap<String, String> = g.state.nodes.iter().map(|n| (n.id.clone(), n.name.clone())).collect();
+            (used_nodes(&g.state), s.upstreams.clone(), g.state.selected.clone(), names)
+        };
+        // Forget nodes the rules no longer use.
+        self.route_health.lock().unwrap().retain(|id, _| used.iter().any(|(x, _, _)| x == id));
+        if !probe_url_ok(&settings.test_url) {
+            return;
+        }
+        let mut set = JoinSet::new();
+        for (id, rules, rest) in used.iter().filter(|(id, _, _)| Some(id) != selected.as_ref()) {
+            let Some(name) = names.get(id) else { continue }; // deleted: shown as such, nothing to check
+            let what = route_what(rules, *rest);
+            let Some(u) = upstreams.get(id) else {
+                self.route_result(id, name, &what, &Err("the node is not running (its engine did not start)".into()));
+                continue;
+            };
+            // Due: on schedule, while unconfirmed (new, or one failure), or when its traffic fails.
+            let unconfirmed = self.route_health.lock().unwrap().get(id).map_or(true, |h| h.fails == 1 || h.state == "unknown");
+            let traffic_fails = self.stats.node_fails(&u.name) >= 3;
+            if !(tick % 2 == 0 || unconfirmed || traffic_fails) {
+                continue;
+            }
+            if traffic_fails {
+                self.stats.take_node_fails(&u.name);
+            }
+            let (id, name, port, url) = (id.clone(), name.clone(), u.port, settings.test_url.clone());
+            set.spawn(async move {
+                let r = Self::probe_node(port, &url).await;
+                (id, name, what, r)
+            });
+        }
+        while let Some(r) = set.join_next().await {
+            if let Ok((id, name, what, r)) = r {
+                self.route_result(&id, &name, &what, &r);
+            }
+        }
+    }
+
+    /// Record a check of a node used by rules; log when it goes down or comes back.
+    fn route_result(&self, id: &str, name: &str, what: &str, r: &Result<(u32, Option<u32>), String>) {
+        let mut map = self.route_health.lock().unwrap();
+        let h = map.entry(id.to_string()).or_insert_with(|| RouteHealth { state: "unknown", ..Default::default() });
+        let was = h.state;
+        match r {
+            Ok((ms, rtt)) => {
+                *h = RouteHealth { state: "ok", ms: Some(rtt.unwrap_or(*ms)), error: None, fails: 0 };
+            }
+            Err(e) => {
+                h.fails += 1;
+                h.error = Some(e.clone());
+                h.ms = None;
+                if h.fails >= 2 {
+                    h.state = "down";
+                }
+            }
+        }
+        let now = h.state;
+        drop(map);
+        if was != now && (now == "down" || was == "down") {
+            if now == "down" {
+                self.logs.warn(format!(
+                    "[routes] '{name}' does not answer ({}): {what} — this traffic is blocked, it does not go around the VPN",
+                    r.as_ref().err().cloned().unwrap_or_default()
+                ));
+            } else {
+                self.logs.push(format!("[routes] '{name}' answers again — {what} work again"));
+            }
+        }
+    }
+
+    /// What a status line outside the app (the Android notification) needs: is the active node
+    /// down, and which nodes the rules use do not answer. Cheap — no snapshot.
+    pub async fn alerts(&self) -> serde_json::Value {
+        let g = self.inner.lock().await;
+        let connected = g.session.is_some();
+        let main = g.state.selected.as_ref().and_then(|id| g.state.nodes.iter().find(|n| &n.id == id)).map(|n| n.name.clone());
+        let main_down = connected && self.health.lock().unwrap().state == "degraded";
+        let down: Vec<String> = if connected {
+            self.routes_view(&g.state, true).into_iter().filter(|r| !r.main && r.state == "down").map(|r| r.name).collect()
+        } else {
+            Vec::new()
+        };
+        serde_json::json!({ "connected": connected, "main": main, "main_down": main_down, "down": down })
+    }
+
+    /// Home's "routes": the active node and the nodes rules use, with their state.
+    fn routes_view(&self, st: &State, connected: bool) -> Vec<RouteView> {
+        let health = self.health.lock().unwrap().clone();
+        let map = self.route_health.lock().unwrap();
+        used_nodes(st)
+            .into_iter()
+            .map(|(id, rules, everything_else)| {
+                let main = st.selected.as_deref() == Some(id.as_str());
+                let node = st.nodes.iter().find(|n| n.id == id);
+                let (state, ms, error) = match (connected, node, main) {
+                    (_, None, _) => ("down", None, Some("this node was deleted — the rules that send traffic to it block it".to_string())),
+                    (false, _, _) => ("unknown", None, None),
+                    (true, _, true) => (if health.state == "degraded" { "down" } else { health.state }, health.ms, health.error.clone()),
+                    (true, _, false) => map.get(&id).map(|h| (h.state, h.ms, h.error.clone())).unwrap_or(("unknown", None, None)),
+                };
+                RouteView {
+                    name: node.map(|n| n.name.clone()).unwrap_or_else(|| "?".into()),
+                    id,
+                    main,
+                    rules,
+                    everything_else,
+                    state,
+                    ms,
+                    error,
+                }
+            })
+            .collect()
     }
 
     /// Without Smart Connect: check the active node every 20 s and show when it stops
@@ -2302,6 +2542,7 @@ impl Controller {
             self.logs.push("[hub] disconnected");
         }
         self.set_health("unknown", None, None);
+        self.route_health.lock().unwrap().clear();
         if g.state.proxy_dirty {
             g.state.proxy_dirty = false;
             self.save(&g.state);
@@ -2378,7 +2619,25 @@ impl Controller {
                 g.latency.insert(n.id.clone(), Latency { ms: None, rtt: None, error: Some(why), at_ms: now });
             }
         }
+        // A test of a node the rules use (not the active one) also updates its route state:
+        // "check again" on Home clears a "down" at once when the node is back.
+        let route_updates: Vec<(String, String, String)> = if connected {
+            let selected = g.state.selected.clone();
+            used_nodes(&g.state)
+                .into_iter()
+                .filter(|(id, _, _)| Some(id) != selected.as_ref())
+                .filter_map(|(id, rules, rest)| {
+                    let name = g.state.nodes.iter().find(|n| n.id == id)?.name.clone();
+                    Some((id, name, route_what(&rules, rest)))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         for (id, r) in results {
+            if let Some((_, name, what)) = route_updates.iter().find(|(x, _, _)| *x == id) {
+                self.route_result(&id, name, what, &r);
+            }
             let l = match r {
                 Ok((ms, rtt)) => Latency { ms: Some(ms), rtt, error: None, at_ms: now },
                 Err(e) => Latency { ms: None, rtt: None, error: Some(e), at_ms: now },

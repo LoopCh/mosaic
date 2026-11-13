@@ -30,6 +30,7 @@ pub async fn dispatch(ctl: &Arc<Controller>, cmd: &str, args: &Value) -> Result<
     match cmd {
         "snapshot" => json(ctl.snapshot().await),
         "progress" => json(ctl.progress()),
+        "alerts" => json(ctl.alerts().await),
         "connect" => json(ctl.connect().await?),
         "disconnect" => json(ctl.disconnect().await),
         "import_text" => json(ctl.import_text(&arg::<String>(args, &["text"])?).await),

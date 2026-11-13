@@ -73,6 +73,9 @@ pub struct Stats {
     /// "Verbose log": every connection, not only failures.
     verbose: AtomicBool,
     throttle: Throttle,
+    /// Per node (by name): new TCP connections in a row that got nothing back. Reset by any
+    /// connection that did. A hint for the health monitor to check that node right away.
+    node_fails: Mutex<HashMap<String, u32>>,
 }
 
 /// "1.2 KB", "3.4 MB" for the log.
@@ -157,6 +160,7 @@ impl Stats {
 
     pub fn close(&self, conn: &ConnEntry, error: Option<String>) {
         self.active.lock().unwrap().remove(&conn.id);
+        self.node_signal(conn, error.as_deref());
         self.log_close(conn, error.as_deref());
         let mut c = self.closed.lock().unwrap();
         if c.len() >= CLOSED_KEEP {
@@ -194,6 +198,32 @@ impl Stats {
                 }
             }
         }
+    }
+
+    fn node_signal(&self, c: &ConnEntry, error: Option<&str>) {
+        if c.network != "tcp" || c.engine.is_none() {
+            return;
+        }
+        let failed = match error {
+            Some(e) if e.contains("blocked by rule") => return,
+            Some(_) => c.down.load(Relaxed) == 0,
+            None => c.down.load(Relaxed) == 0 && c.up.load(Relaxed) > 0,
+        };
+        let mut m = self.node_fails.lock().unwrap();
+        if failed {
+            *m.entry(c.outbound.clone()).or_insert(0) += 1;
+        } else if c.down.load(Relaxed) > 0 {
+            m.remove(&c.outbound);
+        }
+    }
+
+    /// Failed connections in a row through this node — and forget them (they were noticed).
+    pub fn take_node_fails(&self, name: &str) -> u32 {
+        self.node_fails.lock().unwrap().remove(name).unwrap_or(0)
+    }
+
+    pub fn node_fails(&self, name: &str) -> u32 {
+        self.node_fails.lock().unwrap().get(name).copied().unwrap_or(0)
     }
 
     /// Recently closed connections that ended with an error (for the diagnostic report).

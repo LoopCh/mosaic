@@ -247,10 +247,13 @@ function selectedNode() {
 // One state for the whole UI, so what the user sees always matches what happens:
 //   off · connecting · reloading · disconnecting · on · degraded · error
 const op = { kind: null, started: 0, progress: null, error: null };
+// Nodes that rules send traffic to (not the active one) and that do not answer.
+const routesDown = () => ((snap && snap.status.routes) || []).filter((r) => !r.main && r.state === 'down');
+const mainDown = () => !!(snap && snap.status.health && snap.status.health.state === 'degraded');
 function phase() {
   if (!snap) return 'off';
   if (op.kind) return op.kind;
-  if (snap.status.connected) return snap.status.health && snap.status.health.state === 'degraded' ? 'degraded' : 'on';
+  if (snap.status.connected) return mainDown() || routesDown().length ? 'degraded' : 'on';
   if (snap.status.kill_switch === 'blocking') return 'blocked';
   return op.error ? 'error' : 'off';
 }
@@ -389,7 +392,7 @@ function renderStatus(sample) {
   const ph = phase();
   const dot = { on: ' on', degraded: ' warn', connecting: ' busy', reloading: ' busy', disconnecting: ' busy', error: ' err', blocked: ' err' }[ph] || '';
   $('#side-dot').className = 'dot' + dot;
-  $('#side-status').textContent = t('phase.' + ph);
+  $('#side-status').textContent = t(ph === 'degraded' && !mainDown() ? 'phase.partial' : 'phase.' + ph);
   const sel = selectedNode();
   $('#side-sub').textContent = st.connected && sel ? sel.name : 'Mosaic ' + (snap.version || '');
 }
@@ -449,6 +452,13 @@ function renderHero() {
     actions = btn('disconnect', t('hero.disconnect'), 'ghost big');
     const h = st.health || {};
     meta = [st.since_ms ? t('home.online', fmtDur(Date.now() - st.since_ms)) : '', h.ms != null ? t('hero.answers', h.ms) : '', st.kill_switch === 'armed' ? t('hero.ksOn') : ''].filter(Boolean).join(' · ');
+  } else if (ph === 'degraded' && !mainDown()) {
+    // The active node works; a node some rules use does not: those sites are blocked.
+    const down = routesDown();
+    title = t('phase.partial');
+    sub = t('hero.routeDown', down.map((r) => r.name).join(', '), routeWhat(down.flatMap((r) => r.rules), down.some((r) => r.everything_else), 3));
+    actions = btn('recheck', t('hero.recheck'), 'primary') + btn('rules', t('nav.rules')) + btn('disconnect', t('hero.disconnect'), 'ghost');
+    meta = viaText(st);
   } else if (ph === 'degraded') {
     sub = t('hero.degraded', n ? n.name : '');
     actions = btn('pick', t('hero.pick'), 'primary') + (snap.settings.smart_connect ? '' : btn('smart', t('hero.smartOn'))) + btn('disconnect', t('hero.disconnect'), 'ghost');
@@ -491,6 +501,14 @@ $('#hero-actions').addEventListener('click', async (e) => {
     case 'smart-connect': await invoke('set_smart', { on: true }); snap = await invoke('snapshot'); return connectNow();
     case 'subs': return withBusy(b, async () => { await invoke('update_subscriptions'); snap = await invoke('snapshot'); toast(t('settings.saved'), 'ok', 2000); });
     case 'logs': return show('logs');
+    case 'rules': return show('rules');
+    case 'recheck':
+      return withBusy(b, async () => {
+        const ids = routesDown().map((r) => r.id);
+        try { await invoke('test_latency', { ids }); } catch (e) { toast(e, 'error'); }
+        snap = await invoke('snapshot'); renderLive();
+        if (!routesDown().length) toast(t('routes.back'), 'ok', 3000);
+      });
     case 'unblock':
       return withBusy(b, async () => {
         try { await invoke('release_kill_switch'); op.error = null; toast(t('toast.unblocked'), 'ok', 3000); }
@@ -533,6 +551,8 @@ function renderHome() {
     }
   }
 
+  renderRoutes();
+
   const up = traffic.up.at(-1) || 0, down = traffic.down.at(-1) || 0;
   $('#rate-up').textContent = fmtRate(up);
   $('#rate-down').textContent = fmtRate(down);
@@ -542,6 +562,55 @@ function renderHome() {
   $('#uptime').textContent = st.connected && st.since_ms ? t('home.online', fmtDur(Date.now() - st.since_ms)) : '—';
   drawSpark();
 }
+// "youtube.com, googlevideo.com and 2 more" (+ "everything else").
+function routeWhat(rules, rest, max = 2) {
+  const shown = rules.slice(0, max);
+  let s = shown.join(', ');
+  if (rules.length > max) s += t('routes.more', rules.length - max);
+  if (rest) s = s ? t('routes.andRest', s) : t('routes.rest');
+  return s;
+}
+
+// Home: which nodes the routing uses — the active one and those the rules send traffic to —
+// and, while connected, whether each answers. Shown only when rules use more than one node.
+function renderRoutes() {
+  const box = $('#routes');
+  const routes = snap.status.routes || [];
+  const on = snap.status.connected;
+  const visible = routes.some((r) => !r.main);
+  box.classList.toggle('hidden', !visible);
+  if (!visible) return;
+  const key = JSON.stringify([lang, on, routes]);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const row = (r) => {
+    const what = r.rules.length || r.everything_else ? routeWhat(r.rules, r.everything_else) : t('routes.noRules');
+    const stat = !on ? '—' : r.state === 'down' ? t('routes.down') : r.state === 'ok' ? (r.ms != null ? `${r.ms} ms` : t('routes.ok')) : t('routes.checking');
+    const cls = !on ? 'unknown' : r.state;
+    const tip = [r.error ? `${t('nodes.errTip')}: ${r.error}` : '', r.rules.length > 2 || r.everything_else ? routeWhat(r.rules, r.everything_else, 50) : '', on ? t('nodes.testOne') : '']
+      .filter(Boolean).join('\n\n');
+    return `<div class="route ${cls}" data-id="${esc(r.id)}">
+      <span class="rdot"></span>
+      <div class="r-main"><div class="r-name">${esc(r.name)}${r.main ? ` <span class="badge auto">${t('routes.main')}</span>` : ''}</div>
+        <div class="r-what muted small">${esc(what)}</div>
+        ${on && r.state === 'down' && r.error ? `<div class="r-err small">${esc(r.error)}</div>` : ''}</div>
+      <button class="r-stat lat-btn" ${on ? '' : 'disabled'} data-tip="${esc(tip || what)}">${esc(stat)}</button>
+    </div>`;
+  };
+  box.innerHTML = `<div class="routes-head"><span class="tile-label">${t('routes.title')}</span><button class="link small" data-a="rules">${t('nav.rules')} →</button></div>` + routes.map(row).join('');
+}
+$('#routes').addEventListener('click', (e) => {
+  if (e.target.closest('[data-a="rules"]')) return show('rules');
+  const b = e.target.closest('.r-stat');
+  if (!b || b.disabled) return;
+  const id = b.closest('.route').dataset.id;
+  withBusy(b, async () => {
+    b.textContent = '…';
+    try { await invoke('test_latency', { ids: [id] }); } catch (err) { toast(err, 'error'); }
+    snap = await invoke('snapshot'); $('#routes').dataset.key = ''; renderLive();
+  });
+});
+
 $('#current-node').addEventListener('click', () => {
   if (!snap) return;
   if (!snap.nodes.length) { show('nodes'); $('#import-panel').classList.remove('hidden'); return; }
@@ -727,6 +796,7 @@ function nodeRow(n) {
       <div style="min-width:0">
         <div class="node-name">${esc(n.name)}</div>
         <div class="node-meta">${esc(n.summary)} · ${esc(n.server)}:${n.port}</div>
+        ${n.latency && n.latency.error ? `<div class="node-err">${esc(n.latency.error)}</div>` : ''}
       </div>
       ${engineBadge(n.effective)}
       <button class="lat lat-btn ${latClass(n)}" aria-label="${esc(t('nodes.testOne'))}" data-tip="${esc(latTipFull(n))}">${lat || '<span class="lat-go">' + t('nodes.testShort') + '</span>'}</button>

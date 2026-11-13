@@ -45,6 +45,9 @@ class MosaicVpnService : VpnService() {
         @Volatile var lockdown: Boolean? = null
             private set
 
+        /** How often the notification text follows the node checks (they run every 20 s). */
+        private const val WATCH_MS = 10_000L
+
         /** Start and wait for the result: `{"ok":null}` or `{"err":"…"}`. */
         suspend fun start(ctx: Context, vpn: Boolean, port: Int): String {
             val d = CompletableDeferred<String>()
@@ -156,6 +159,48 @@ class MosaicVpnService : VpnService() {
             lockdown = isLockdownEnabled
         }
         Connector.refreshTile(this)
+        if (on) watch()
+    }
+
+    // The notification is Mosaic's status line on the phone (the tray on a desktop): it says
+    // when the server stops answering, or when a node some rules use does — those sites are
+    // blocked then (never sent around the VPN), and the user should know why they do not open.
+    @Volatile private var watcher: Thread? = null
+    private var vpnMode = true
+    private var proxyPort = 7890
+
+    private fun watch() {
+        if (watcher?.isAlive == true) return
+        watcher = thread(name = "mosaic-watch", isDaemon = true) {
+            var shown: String? = null
+            while (running) {
+                try {
+                    val reply = org.json.JSONObject(Native.invoke("alerts", "{}"))
+                    val a = reply.optJSONObject("ok")
+                    if (a != null && a.optBoolean("connected")) {
+                        val down = a.optJSONArray("down")
+                        val names = (0 until (down?.length() ?: 0)).map { down!!.optString(it) }
+                        val text = when {
+                            a.optBoolean("main_down") -> getString(R.string.notif_main_down, a.optString("main"))
+                            names.isNotEmpty() -> getString(R.string.notif_routes_down, names.joinToString(", "))
+                            else -> getString(R.string.notif_text)
+                        }
+                        if (text != shown) {
+                            shown = text
+                            val nm = getSystemService(android.app.NotificationManager::class.java)
+                            nm.notify(NOTIF_ID, notification(vpnMode, proxyPort, text, text != getString(R.string.notif_text)))
+                        }
+                    }
+                } catch (_: Exception) {
+                    // the core is busy reconnecting: next round
+                }
+                try {
+                    Thread.sleep(WATCH_MS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }
     }
 
     private fun shutdown() {
@@ -177,19 +222,27 @@ class MosaicVpnService : VpnService() {
     }
 
     private fun goForeground(vpn: Boolean, port: Int) {
+        vpnMode = vpn
+        proxyPort = port
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
         ServiceCompat.startForeground(this, NOTIF_ID, notification(vpn, port), type)
     }
 
-    private fun notification(vpn: Boolean, port: Int): Notification {
+    private fun notification(vpn: Boolean, port: Int, text: String = getString(R.string.notif_text), warn: Boolean = false): Notification {
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), flags)
         val stop = PendingIntent.getService(this, 1, Intent(this, MosaicVpnService::class.java).setAction(ACTION_STOP), flags)
-        val title = if (vpn) getString(R.string.notif_vpn) else getString(R.string.notif_proxy, port)
+        val title = when {
+            warn -> getString(R.string.notif_partial)
+            vpn -> getString(R.string.notif_vpn)
+            else -> getString(R.string.notif_proxy, port)
+        }
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notif)
             .setContentTitle(title)
-            .setContentText(getString(R.string.notif_text))
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setOnlyAlertOnce(true)
             .setContentIntent(open)
             .setOngoing(true)
             .setShowWhen(false)

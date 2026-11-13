@@ -189,6 +189,31 @@ select { cursor: pointer; }
 .node-card .sub { color: var(--muted); margin-top: 4px; }
 .flag { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; font-weight: 700; background: linear-gradient(135deg, rgba(124,92,255,.35), rgba(56,189,248,.25)); }
 .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.routes-card { padding: 12px 16px 8px; }
+.routes-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.routes-head .link { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 2px 0; font: inherit; font-size: 12px; }
+.routes-head .link:hover { color: var(--text); }
+.route { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.routes-head + .route { border-top: 0; }
+.rdot { width: 8px; height: 8px; border-radius: 50%; background: #4a5068; }
+.route.ok .rdot { background: var(--good); box-shadow: 0 0 8px rgba(52, 211, 153, .5); }
+.route.down .rdot { background: var(--bad); box-shadow: 0 0 8px rgba(248, 113, 113, .55); }
+.r-main { min-width: 0; }
+.r-name { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r-name .badge { margin-left: 4px; font-size: 10px; padding: 2px 7px; vertical-align: 1px; }
+.r-what { margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r-stat { color: var(--muted); min-width: 64px; text-align: right; }
+.route.ok .r-stat { color: var(--good); }
+.route.down .r-stat { color: var(--bad); font-weight: 600; }
+.r-stat:disabled { cursor: default; }
+.r-err { color: var(--bad); margin-top: 2px; overflow-wrap: anywhere; }
+/* Phones have no hover: the error is written under the node instead of a hover card, and a
+   tap (which checks the node) must not leave a card stuck on the screen. */
+.node-err { display: none; color: var(--bad); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
+@media (hover: none) {
+  [data-tip]:hover::after, [data-tip]:focus-visible::after { display: none; }
+  .node-err { display: block; }
+}
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
 .tile-label { color: var(--muted); font-size: 12px; }
 .tile-val { font-size: 22px; font-weight: 650; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
@@ -222,7 +247,11 @@ select { cursor: pointer; }
 .px-grid .px-cred { grid-column: span 2; }
 .px-grid .px-name { grid-column: 1 / -1; }
 .proxy-form .row { margin-top: 12px; }
-@media (max-width: 640px) { .px-grid { grid-template-columns: 1fr 1fr; } .px-grid .px-host, .px-grid .px-name { grid-column: 1 / -1; } .px-grid .px-cred { grid-column: auto; } }
+@media (max-width: 640px) {
+  .px-grid { grid-template-columns: 1fr 1fr; grid-template-areas: "type port" "host host" "user pass" "name name"; }
+  .px-grid .px-type { grid-area: type; } .px-grid .px-port { grid-area: port; } .px-grid .px-host { grid-area: host; }
+  .px-grid .px-user { grid-area: user; } .px-grid .px-pass { grid-area: pass; } .px-grid .px-name { grid-area: name; }
+}
 .filter-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .filter-row input { width: 340px; }
 .node-list { display: flex; flex-direction: column; gap: 6px; }

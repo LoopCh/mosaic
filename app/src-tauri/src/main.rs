@@ -210,6 +210,7 @@ struct Labels {
     on: &'static str,
     off: &'static str,
     weak: &'static str,
+    partial: &'static str,
     blocked: &'static str,
 }
 
@@ -220,9 +221,9 @@ fn labels(ui_language: &str) -> Labels {
         _ => mosaic_core::sys::ui_lang_is_ru(),
     };
     if ru {
-        Labels { auto: "Авто (самый быстрый)", open: "Открыть Mosaic", connect: "Подключить", disconnect: "Отключить", nodes: "Узлы", quit: "Выход", on: "подключено", off: "отключено", weak: "сервер не отвечает", blocked: "интернет заблокирован (kill switch)" }
+        Labels { auto: "Авто (самый быстрый)", open: "Открыть Mosaic", connect: "Подключить", disconnect: "Отключить", nodes: "Узлы", quit: "Выход", on: "подключено", off: "отключено", weak: "сервер не отвечает", partial: "подключено, узел из правил не отвечает", blocked: "интернет заблокирован (kill switch)" }
     } else {
-        Labels { auto: "Auto (fastest)", open: "Open Mosaic", connect: "Connect", disconnect: "Disconnect", nodes: "Nodes", quit: "Quit", on: "connected", off: "disconnected", weak: "the server does not answer", blocked: "internet blocked (kill switch)" }
+        Labels { auto: "Auto (fastest)", open: "Open Mosaic", connect: "Connect", disconnect: "Disconnect", nodes: "Nodes", quit: "Quit", on: "connected", off: "disconnected", weak: "the server does not answer", partial: "connected, a node used by rules does not answer", blocked: "internet blocked (kill switch)" }
     }
 }
 
@@ -350,12 +351,15 @@ async fn refresh_tray(app: &AppHandle, ctl: &Controller, last: &str) -> String {
         set_state_icon(app, IconState::Busy);
     }
     let snap = ctl.snapshot().await;
+    // A node that rules send traffic to does not answer: some sites do not work — yellow too.
+    let route_down = snap.status.routes.iter().filter(|r| !r.main && r.state == "down").map(|r| r.name.clone()).collect::<Vec<_>>();
     set_state_icon(
         app,
         match (snap.status.connected, snap.status.health.state) {
             (false, _) if snap.status.kill_switch == "blocking" => IconState::Busy,
             (false, _) => IconState::Off,
             (true, "degraded") => IconState::Busy,
+            (true, _) if !route_down.is_empty() => IconState::Busy,
             (true, _) => IconState::On,
         },
     );
@@ -375,12 +379,17 @@ async fn refresh_tray(app: &AppHandle, ctl: &Controller, last: &str) -> String {
             (false, _) if snap.status.kill_switch == "blocking" => l.blocked,
             (false, _) => l.off,
             (true, "degraded") => l.weak,
+            (true, _) if !route_down.is_empty() => l.partial,
             (true, _) => l.on,
         };
         let mut tip = format!("Mosaic — {state}");
         if !sel_name.is_empty() {
             tip.push_str(" · ");
             tip.push_str(&sel_name);
+        }
+        if !route_down.is_empty() {
+            tip.push_str(" · ✕ ");
+            tip.push_str(&route_down.join(", "));
         }
         let tip: String = tip.chars().take(120).collect();
         let _ = tray.set_tooltip(Some(tip));

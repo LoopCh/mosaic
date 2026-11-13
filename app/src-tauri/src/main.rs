@@ -86,8 +86,7 @@ async fn set_node_engine(ctl: Ctl<'_>, id: String, engine: EngineChoice) -> Resu
 
 #[tauri::command]
 async fn set_rules(ctl: Ctl<'_>, rules: Vec<Rule>, final_target: String) -> Result<(), String> {
-    ctl.set_rules(rules, final_target).await;
-    Ok(())
+    ctl.set_rules(rules, final_target).await
 }
 
 #[tauri::command]
@@ -147,8 +146,8 @@ async fn set_smart(ctl: Ctl<'_>, on: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn test_latency(ctl: Ctl<'_>) -> Result<(), String> {
-    ctl.test_latency().await
+async fn test_latency(ctl: Ctl<'_>, ids: Option<Vec<String>>) -> Result<(), String> {
+    ctl.test_nodes(ids.as_deref()).await
 }
 
 #[tauri::command]

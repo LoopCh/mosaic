@@ -656,6 +656,12 @@ function latHtml(n, withError) {
   if (l.rtt == null) return `${l.ms} ms`;
   return `${l.rtt} ms<small>${t('lat.conn', l.ms)}</small>`;
 }
+// The hover card on a node's latency: the error in full (or the numbers), then what a click does.
+function latTipFull(n) {
+  const l = n.latency;
+  const head = !l ? '' : l.error ? `${t('nodes.errTip')}: ${l.error}` : latTip(n);
+  return (head ? head + '\n\n' : '') + t('nodes.testOne');
+}
 function latTip(n) {
   const l = n.latency;
   if (!l) return '';
@@ -713,7 +719,6 @@ function subHeader(s, count, open) {
 
 function nodeRow(n) {
   const lat = latHtml(n, true);
-  const latTitle = esc(latTip(n));
   const autoLabel = n.engine === 'auto' && n.effective ? ` (${engineName(n.effective)})` : '';
   const opt = (v, label, ok) => `<option value="${v}" ${n.engine === v ? 'selected' : ''} ${ok ? '' : 'disabled'}>${label}</option>`;
   return `
@@ -724,7 +729,7 @@ function nodeRow(n) {
         <div class="node-meta">${esc(n.summary)} · ${esc(n.server)}:${n.port}</div>
       </div>
       ${engineBadge(n.effective)}
-      <span class="lat ${latClass(n)}" title="${latTitle}">${lat}</span>
+      <button class="lat lat-btn ${latClass(n)}" aria-label="${esc(t('nodes.testOne'))}" data-tip="${esc(latTipFull(n))}">${lat || '<span class="lat-go">' + t('nodes.testShort') + '</span>'}</button>
       <select class="engine-sel" title="${esc(n.effective_error || t('nodes.engineTitle'))}">
         ${opt('auto', 'Auto' + autoLabel, true)}
         ${opt('xray', 'Xray', n.supported.includes('xray'))}
@@ -927,6 +932,14 @@ function renderNodes() {
       const name = (snap.nodes.find((x) => x.id === id) || {}).name || '';
       await reloadAround(() => invoke('set_node_engine', { id, engine }), t('nodes.engineFor', name));
       nodesKey = ''; renderNodes();
+    });
+    // Test just this node: a click on its latency.
+    $('.lat-btn', row).addEventListener('click', (e) => {
+      const b = e.currentTarget;
+      withBusy(b, async () => {
+        b.innerHTML = '<span class="lat-go">…</span>';
+        try { await invoke('test_latency', { ids: [id] }); } finally { snap = await invoke('snapshot'); nodesKey = ''; renderNodes(); }
+      });
     });
     $('.edit', row).addEventListener('click', () => {
       const n = snap.nodes.find((x) => x.id === id);

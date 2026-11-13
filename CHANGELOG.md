@@ -2,6 +2,16 @@
 
 Newest first. Versions before 0.5 cover Windows only.
 
+## 0.11.4 — testing nodes added while connected, one-node test
+
+- **Fixed: nodes added while connected** failed the latency test with “engine did not start” until Mosaic was
+  restarted — their engines are started with the connection. Now they are tested with temporary engines;
+  choosing such a node, or a rule that sends traffic to it, reconnects so that it runs (before, choosing it
+  showed an error and the rule silently blocked).
+- **Test one node**: click its latency (or “test”) in the node list.
+- **Errors on hover**: pointing at a node's latency shows a card at once with the whole error (or what the
+  numbers mean) — the native tooltip waited a second and cut long messages.
+
 ## 0.11.3 — editing nodes, https:// health check
 
 - **Editing nodes** (✎ next to a node): name, server, port and every field the node really has — UUID, passwords,

@@ -48,12 +48,15 @@ pub async fn dispatch(ctl: &Arc<Controller>, cmd: &str, args: &Value) -> Result<
         "set_rules" => {
             let rules: Vec<Rule> = arg(args, &["rules"])?;
             let final_target: String = arg(args, &["finalTarget", "final_target"])?;
-            json(ctl.set_rules(rules, final_target).await)
+            json(ctl.set_rules(rules, final_target).await?)
         }
         "set_settings" => json(ctl.set_settings(arg::<Settings>(args, &["settings"])?).await?),
         "release_kill_switch" => json(ctl.release_kill_switch().await?),
         "set_smart" => json(ctl.set_smart(arg::<bool>(args, &["on"])?).await),
-        "test_latency" => json(ctl.test_latency().await?),
+        "test_latency" => {
+            let ids: Option<Vec<String>> = arg(args, &["ids"]).ok().flatten();
+            json(ctl.test_nodes(ids.as_deref()).await?)
+        }
         "connections" => json(ctl.connections()),
         "logs" => json(ctl.logs()),
         "log_entries" => json(ctl.log_entries(arg::<u64>(args, &["since"]).unwrap_or(0))),

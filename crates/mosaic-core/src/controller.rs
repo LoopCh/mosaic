@@ -1008,11 +1008,15 @@ impl Controller {
         }
         g.state.selected = Some(id.to_string());
         self.save(&g.state);
+        if g.session.as_ref().is_some_and(|s| !s.upstreams.contains_key(id)) {
+            // Added after connecting: its engine is not running yet — reconnect to start it.
+            drop(g);
+            self.logs.push(format!("[hub] '{name}' was added after connecting — reconnecting to start it"));
+            self.drop_session().await;
+            return self.connect().await;
+        }
         let inner = &mut *g;
         if let Some(s) = inner.session.as_ref() {
-            if !s.upstreams.contains_key(id) {
-                return Err("This node is not running — reconnect".into());
-            }
             s.hub.update(routing_for(&inner.state, s));
             self.logs.push(format!("[hub] active node → {name}"));
             if manual {
@@ -1103,11 +1107,32 @@ impl Controller {
 
     // ------------------------------------------------------------ rules & settings
 
-    pub async fn set_rules(&self, rules: Vec<Rule>, final_target: String) {
+    pub async fn set_rules(&self, rules: Vec<Rule>, final_target: String) -> Result<(), String> {
         let mut g = self.inner.lock().await;
         g.state.rules = rules;
         g.state.settings.final_target = final_target;
         self.save(&g.state);
+        // A rule now sends traffic to a node added after connecting: without its engine the
+        // rule would block that traffic — reconnect so that it runs.
+        let not_running: Vec<String> = match g.session.as_ref() {
+            Some(s) => {
+                let finals = std::iter::once(g.state.settings.final_target.as_str());
+                let targets: Vec<&str> = g.state.rules.iter().filter(|r| r.enabled).map(|r| r.target.as_str()).chain(finals).collect();
+                g.state
+                    .nodes
+                    .iter()
+                    .filter(|n| !s.upstreams.contains_key(&n.id) && targets.iter().any(|t| t.strip_prefix("node:") == Some(n.id.as_str())))
+                    .map(|n| n.name.clone())
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        if !not_running.is_empty() {
+            drop(g);
+            self.logs.push(format!("[hub] rules use {} added after connecting — reconnecting to start it", not_running.join(", ")));
+            self.drop_session().await;
+            return self.connect().await;
+        }
         let geo = if g.session.is_some() { Some(self.load_geo(&g.state.rules)) } else { None };
         let inner = &mut *g;
         if let (Some(s), Some(geo)) = (inner.session.as_mut(), geo) {
@@ -1132,6 +1157,7 @@ impl Controller {
                 }
             }
         }
+        Ok(())
     }
 
     /// Turn Smart Connect on or off (on: re-test right away).
@@ -2290,17 +2316,41 @@ impl Controller {
 
     /// Test every node through its engine. Starts temporary engines if not connected.
     pub async fn test_latency(&self) -> Result<(), String> {
-        let (nodes, url, existing) = {
+        self.test_nodes(None).await
+    }
+
+    /// Test some nodes (`only`) or all. While connected, the running engines are used; nodes
+    /// added after connecting are not in them yet, so they get temporary engines of their own —
+    /// before, they simply failed with "engine did not start" until Mosaic was restarted.
+    pub async fn test_nodes(&self, only: Option<&[String]>) -> Result<(), String> {
+        let (all, url, existing) = {
             let g = self.inner.lock().await;
             (g.state.nodes.clone(), g.state.settings.test_url.clone(), g.session.as_ref().map(|s| s.upstreams.clone()))
         };
+        let nodes: Vec<Node> = all.into_iter().filter(|n| only.map_or(true, |ids| ids.contains(&n.id))).collect();
         if nodes.is_empty() {
             return Ok(());
         }
-        let (temp, upstreams) = match existing {
-            Some(u) => (Vec::new(), u),
-            None => self.start_engines(&nodes).await?,
-        };
+        let connected = existing.is_some();
+        let mut upstreams = existing.unwrap_or_default();
+        let missing: Vec<Node> = nodes.iter().filter(|n| !upstreams.contains_key(&n.id) && n.effective_engine().is_ok()).cloned().collect();
+        let mut temp = Vec::new();
+        if !missing.is_empty() {
+            if connected {
+                self.logs.push(format!(
+                    "[test] {} node(s) added after connecting are not running yet — testing them with temporary engines",
+                    missing.len()
+                ));
+            }
+            match self.start_engines(&missing).await {
+                Ok((p, u)) => {
+                    temp = p;
+                    upstreams.extend(u);
+                }
+                Err(e) if connected => self.logs.warn(format!("[test] temporary engines did not start: {e}")),
+                Err(e) => return Err(e),
+            }
+        }
         let mut set = JoinSet::new();
         for n in &nodes {
             if let Some(u) = upstreams.get(&n.id) {

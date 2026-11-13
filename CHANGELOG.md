@@ -2,6 +2,17 @@
 
 Newest first. Versions before 0.5 cover Windows only.
 
+## 0.11.3 — editing nodes, https:// health check
+
+- **Editing nodes** (✎ next to a node): name, server, port and every field the node really has — UUID, passwords,
+  flow, cipher, path / host / gRPC service, SNI, ALPN, fingerprint, REALITY keys, WireGuard keys and addresses, and
+  for proxies the type (SOCKS5 / HTTP / HTTPS), login and password. The node keeps its id, so rules that send
+  traffic to it keep working; a running node restarts only when more than its name changed. Nodes from a
+  subscription can be edited too, with a warning that its next update brings the original back.
+- **`https://` test URL** for the latency test and the health check: through the node to port 443, a TLS
+  ClientHello, the time to the server's answer — the path is proven without a TLS library and without the
+  port-80 CONNECT that some proxies refuse. `http://` stays the default (a real request, also a warm-connection RTT).
+
 ## 0.11.2 — SOCKS5 and HTTP proxies as nodes
 
 - **New node types: SOCKS5 and HTTP / HTTPS proxies**, with or without a login. Add one by hand (Nodes → Add →

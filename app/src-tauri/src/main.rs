@@ -75,6 +75,11 @@ async fn select_node(ctl: Ctl<'_>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn update_node(ctl: Ctl<'_>, node: mosaic_core::model::Node) -> Result<(), String> {
+    ctl.update_node(node).await
+}
+
+#[tauri::command]
 async fn set_node_engine(ctl: Ctl<'_>, id: String, engine: EngineChoice) -> Result<(), String> {
     ctl.set_node_engine(&id, engine).await
 }
@@ -461,6 +466,7 @@ fn main() {
             remove_node,
             select_node,
             set_node_engine,
+            update_node,
             set_rules,
             set_settings,
             set_smart,

@@ -287,6 +287,11 @@ fn kill_switch_startup_report(armed: bool) -> Vec<String> {
     out
 }
 
+/// The latency test / health check can open http:// and https:// URLs.
+fn probe_url_ok(u: &str) -> bool {
+    u.starts_with("http://") || u.starts_with("https://")
+}
+
 fn on_off(b: bool) -> &'static str {
     if b {
         "on"
@@ -1019,6 +1024,64 @@ impl Controller {
         Ok(())
     }
 
+    /// Save an edited node. The id stays (rules that send traffic to it keep working); the
+    /// share link it came from no longer describes it and is dropped. A running node is
+    /// restarted only if something besides its name changed.
+    pub async fn update_node(&self, mut node: Node) -> Result<(), String> {
+        node.name = node.name.trim().to_string();
+        node.server = node.server.trim().trim_matches(|c| c == '[' || c == ']').to_string();
+        if node.server.is_empty() || node.server.contains(char::is_whitespace) {
+            return Err("Enter the server address".into());
+        }
+        if node.port == 0 {
+            return Err("Enter a port from 1 to 65535".into());
+        }
+        if node.name.is_empty() {
+            node.name = format!("{}:{}", node.server, node.port);
+        }
+        node.effective_engine()?;
+        let restart = {
+            let mut g = self.inner.lock().await;
+            let old = g.state.nodes.iter().find(|n| n.id == node.id).cloned().ok_or("node not found")?;
+            node.source = old.source.clone();
+            let same = |a: &Node, b: &Node| {
+                a.server == b.server && a.port == b.port && a.protocol == b.protocol && a.transport == b.transport && a.security == b.security && a.engine == b.engine
+            };
+            let only_name = same(&old, &node);
+            node.link = if only_name { old.link.clone() } else { String::new() };
+            self.logs.push(format!(
+                "[nodes] '{}' edited{}",
+                node.name,
+                if old.name != node.name { format!(" (was '{}')", old.name) } else { String::new() }
+            ));
+            if let Some(n) = g.state.nodes.iter_mut().find(|n| n.id == node.id) {
+                *n = node.clone();
+            }
+            self.save(&g.state);
+            let inner = &mut *g;
+            match inner.session.as_mut() {
+                Some(s) if s.upstreams.contains_key(&node.id) => {
+                    if only_name {
+                        if let Some(u) = s.upstreams.get_mut(&node.id) {
+                            u.name = node.name.clone();
+                        }
+                        s.hub.update(routing_for(&inner.state, s));
+                        false
+                    } else {
+                        true
+                    }
+                }
+                _ => false,
+            }
+        };
+        if restart {
+            self.logs.push("[hub] an active node was edited — restarting engines");
+            self.drop_session().await;
+            self.connect().await?;
+        }
+        Ok(())
+    }
+
     pub async fn set_node_engine(&self, id: &str, choice: EngineChoice) -> Result<(), String> {
         let running = {
             let mut g = self.inner.lock().await;
@@ -1278,7 +1341,7 @@ impl Controller {
             };
             g.state.selected.as_ref().and_then(|id| s.upstreams.get(id)).map(|u| u.port)
         };
-        if !settings.test_url.starts_with("http://") {
+        if !probe_url_ok(&settings.test_url) {
             return;
         }
         let Some(port) = port else {
@@ -1608,8 +1671,8 @@ impl Controller {
     /// Errors start with a tag the UI recognises: `[node-down] name :: detail` or `[no-node]`.
     async fn check_before_switch(&self, st: &mut State, latency: &mut HashMap<String, Latency>, s: &Session) -> Result<(), String> {
         let url = st.settings.test_url.clone();
-        if !url.starts_with("http://") {
-            self.logs.push("[check] skipped: the latency test URL is not http://");
+        if !probe_url_ok(&url) {
+            self.logs.push("[check] skipped: the latency test URL is not http:// or https://");
             return Ok(());
         }
         let selected = st.selected.clone().unwrap_or_default();

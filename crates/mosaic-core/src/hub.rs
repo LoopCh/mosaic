@@ -736,7 +736,10 @@ pub(crate) fn parse_head(head: &[u8]) -> Option<HeadInfo> {
 ///   * round trip — a second request on the same connection: one round trip
 ///     through the tunnel, comparable with "ping" in speed tests.
 pub async fn url_probe(proxy_port: u16, url: &str) -> Result<(u32, Option<u32>), String> {
-    let rest = url.strip_prefix("http://").ok_or("latency test supports http:// URLs only")?;
+    if let Some(rest) = url.strip_prefix("https://") {
+        return tls_probe(proxy_port, rest).await;
+    }
+    let rest = url.strip_prefix("http://").ok_or("the test URL must start with http:// or https://")?;
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
@@ -807,10 +810,121 @@ pub async fn url_probe(proxy_port: u16, url: &str) -> Result<(u32, Option<u32>),
     Ok((ms, rtt))
 }
 
+/// `https://` test URL: through the node to host:443, a TLS ClientHello, and the time until
+/// the server's first TLS record. That proves the whole path (engine → node → site) without a
+/// TLS library; no certificate is checked and nothing is sent after the hello, so the second
+/// (warm) measurement is not available. Port 443 also passes proxies that refuse CONNECT to 80.
+async fn tls_probe(proxy_port: u16, rest: &str) -> Result<(u32, Option<u32>), String> {
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let (host, port) = split_hp(authority, 443).map_err(|e| e.to_string())?;
+    let rnd: [u8; 32] = {
+        use sha2::{Digest, Sha256};
+        let d = Sha256::digest(format!("{}|{host}|{:?}", crate::util::now_ms(), std::time::Instant::now()).as_bytes());
+        let mut r = [0u8; 32];
+        r.copy_from_slice(&d);
+        r
+    };
+    let hello = client_hello(&host, rnd);
+    let started = std::time::Instant::now();
+    let probe = async {
+        let mut s = socks_connect(proxy_port, &host, port).await?;
+        s.write_all(&hello).await?;
+        let mut hdr = [0u8; 5];
+        s.read_exact(&mut hdr).await?;
+        let ms = started.elapsed().as_millis() as u32;
+        match hdr[0] {
+            // Handshake (ServerHello) — or an alert: the server is reached either way.
+            0x16 | 0x15 => Ok(ms),
+            _ => Err(other("the answer is not TLS")),
+        }
+    };
+    match timeout(Duration::from_secs(8), probe).await {
+        Ok(Ok(ms)) => Ok((ms, None)),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("timeout".into()),
+    }
+}
+
+/// A TLS 1.3 / 1.2 ClientHello with SNI, as a browser would start. `rnd` seeds the random,
+/// the session id and the X25519 key share (any 32 bytes are a valid X25519 public key).
+pub(crate) fn client_hello(host: &str, rnd: [u8; 32]) -> Vec<u8> {
+    fn u16b(v: &mut Vec<u8>, x: usize) {
+        v.extend_from_slice(&(x as u16).to_be_bytes());
+    }
+    fn ext(out: &mut Vec<u8>, ty: u16, body: &[u8]) {
+        out.extend_from_slice(&ty.to_be_bytes());
+        u16b(out, body.len());
+        out.extend_from_slice(body);
+    }
+    let mut sid = rnd;
+    sid.reverse();
+    let key: Vec<u8> = rnd.iter().zip(sid.iter()).map(|(a, b)| a ^ b ^ 0x5a).collect();
+
+    let mut exts = Vec::new();
+    let name = host.trim_matches(|c| c == '[' || c == ']');
+    if name.parse::<IpAddr>().is_err() {
+        let mut sni = Vec::new();
+        u16b(&mut sni, name.len() + 3);
+        sni.push(0);
+        u16b(&mut sni, name.len());
+        sni.extend_from_slice(name.as_bytes());
+        ext(&mut exts, 0x0000, &sni);
+    }
+    ext(&mut exts, 0x000a, &[0, 6, 0x00, 0x1d, 0x00, 0x17, 0x00, 0x18]); // groups: x25519, p256, p384
+    ext(&mut exts, 0x000b, &[1, 0]); // point formats: uncompressed
+    let sigs: [u16; 9] = [0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201];
+    let mut sa = Vec::new();
+    u16b(&mut sa, sigs.len() * 2);
+    for x in sigs {
+        sa.extend_from_slice(&x.to_be_bytes());
+    }
+    ext(&mut exts, 0x000d, &sa);
+    ext(&mut exts, 0x0010, &[0, 12, 2, b'h', b'2', 8, b'h', b't', b't', b'p', b'/', b'1', b'.', b'1']); // ALPN
+    ext(&mut exts, 0x002b, &[4, 0x03, 0x04, 0x03, 0x03]); // versions: 1.3, 1.2
+    ext(&mut exts, 0x002d, &[1, 1]); // psk modes: psk_dhe_ke
+    let mut ks = Vec::new();
+    u16b(&mut ks, 36);
+    ks.extend_from_slice(&[0x00, 0x1d, 0x00, 0x20]);
+    ks.extend_from_slice(&key);
+    ext(&mut exts, 0x0033, &ks);
+
+    let ciphers: [u16; 13] = [0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f, 0xc02c, 0xc030, 0xcca9, 0xcca8, 0x009c, 0x009d, 0x002f, 0x0035];
+    let mut body = vec![0x03, 0x03];
+    body.extend_from_slice(&rnd);
+    body.push(32);
+    body.extend_from_slice(&sid);
+    u16b(&mut body, ciphers.len() * 2);
+    for c in ciphers {
+        body.extend_from_slice(&c.to_be_bytes());
+    }
+    body.extend_from_slice(&[1, 0]); // compression: none
+    u16b(&mut body, exts.len());
+    body.extend_from_slice(&exts);
+
+    let mut hs = vec![0x01];
+    hs.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+    hs.extend_from_slice(&body);
+    let mut rec = vec![0x16, 0x03, 0x01];
+    u16b(&mut rec, hs.len());
+    rec.extend_from_slice(&hs);
+    rec
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::RuleKind;
+
+    #[test]
+    fn hello_is_well_formed() {
+        let h = client_hello("www.google.com", [7; 32]);
+        assert_eq!(&h[..3], &[0x16, 0x03, 0x01]);
+        assert_eq!(u16::from_be_bytes([h[3], h[4]]) as usize, h.len() - 5);
+        assert_eq!(h[5], 1);
+        assert_eq!(u32::from_be_bytes([0, h[6], h[7], h[8]]) as usize, h.len() - 9);
+        assert!(h.windows(14).any(|w| w == b"www.google.com"));
+        assert!(!client_hello("1.2.3.4", [7; 32]).windows(7).any(|w| w == b"1.2.3.4"));
+    }
 
     #[test]
     fn probe_heads() {

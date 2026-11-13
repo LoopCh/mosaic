@@ -39,6 +39,7 @@ pub async fn dispatch(ctl: &Arc<Controller>, cmd: &str, args: &Value) -> Result<
         "remove_subscription" => json(ctl.remove_subscription(&arg::<String>(args, &["url"])?).await),
         "remove_node" => json(ctl.remove_node(&arg::<String>(args, &["id"])?).await),
         "select_node" => json(ctl.select_node(&arg::<String>(args, &["id"])?).await?),
+        "update_node" => json(ctl.update_node(arg::<crate::model::Node>(args, &["node"])?).await?),
         "set_node_engine" => {
             let id: String = arg(args, &["id"])?;
             let engine: EngineChoice = arg(args, &["engine"])?;

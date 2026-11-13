@@ -24,8 +24,8 @@ android {
         applicationId = "io.github.loopch.mosaic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1102
-        versionName = "0.11.2"
+        versionCode = 1103
+        versionName = "0.11.3"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 

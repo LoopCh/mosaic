@@ -730,13 +730,124 @@ function nodeRow(n) {
         ${opt('xray', 'Xray', n.supported.includes('xray'))}
         ${opt('singbox', 'sing-box', n.supported.includes('singbox'))}
       </select>
+      <button class="icon-btn edit" title="${t('ne.edit')}">✎</button>
       <button class="icon-btn del" title="${t('nodes.delete')}">×</button>
     </div>`;
 }
 
+// ------------------------------------------------------------------ node editor
+// Name, server and port for every node; then the fields the node's protocol, transport and
+// TLS / REALITY really have (taken from the node itself, so every protocol is covered).
+// Proxies also switch between SOCKS5 / HTTP / HTTPS. Other protocol changes = a new link.
+const NE_SECRET = new Set(['password', 'private_key', 'pre_shared_key', 'obfs_password']);
+function neLabel(k) {
+  const known = {
+    uuid: 'UUID', password: t('ne.password'), username: t('px.user'), flow: 'Flow', cipher: t('ne.cipher'), method: t('ne.cipher'),
+    alter_id: 'alterId', obfs_password: t('ne.obfs'), up_mbps: t('ne.up'), down_mbps: t('ne.down'), congestion: t('ne.cc'),
+    udp_relay_mode: 'UDP relay mode', private_key: t('ne.privkey'), peer_public_key: t('ne.pubkey'), pre_shared_key: 'Pre-shared key',
+    local_address: t('ne.localAddr'), mtu: 'MTU', reserved: 'Reserved', path: t('ne.path'), host: 'Host', service_name: 'gRPC serviceName',
+    mode: 'Mode', sni: 'SNI', alpn: 'ALPN', fingerprint: t('ne.fp'), insecure: t('ne.insecure'), public_key: 'REALITY public key',
+    short_id: 'REALITY short id', spider_x: 'spiderX',
+  };
+  return known[k] || k;
+}
+function neFields(group, obj, skip = []) {
+  return Object.entries(obj).filter(([k]) => k !== 'type' && !skip.includes(k)).map(([k, v]) => {
+    const id = `ne-${group}-${k}`;
+    if (typeof v === 'boolean') {
+      return `<label class="ne-check"><input type="checkbox" id="${id}" data-g="${group}" data-k="${k}" data-t="bool" ${v ? 'checked' : ''} /> ${esc(neLabel(k))}</label>`;
+    }
+    const kind = Array.isArray(v) ? (k === 'reserved' ? 'nums' : 'list') : typeof v === 'number' ? 'num' : 'str';
+    const val = Array.isArray(v) ? v.join(', ') : v;
+    const type = NE_SECRET.has(k) ? 'password' : 'text';
+    return `<label><span class="muted small">${esc(neLabel(k))}${kind === 'list' || kind === 'nums' ? ` <span class="ne-note">${t('ne.commas')}</span>` : ''}</span>
+      <input id="${id}" type="${type}" spellcheck="false" autocomplete="off" data-g="${group}" data-k="${k}" data-t="${kind}" value="${esc(String(val ?? ''))}" /></label>`;
+  }).join('');
+}
+function nodeEditor(n) {
+  const base = { id: n.id, name: n.name, server: n.server, port: n.port, protocol: { ...n.protocol }, transport: { ...n.transport }, security: { ...n.security }, engine: n.engine, source: n.source, link: n.link };
+  const proxy = ['socks', 'http'].includes(n.protocol.type);
+  const pxType = n.protocol.type === 'socks' ? 'socks5' : n.security.type === 'tls' ? 'https' : 'http';
+  const sub = n.source ? (snap.subscriptions.find((s) => s.url === n.source) || {}).name || n.source : null;
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-wrap';
+  wrap.innerHTML = `<div class="modal card node-editor" role="dialog" aria-modal="true">
+    <h3>${t('ne.title')}</h3>
+    ${sub ? `<div class="ne-warn small">${t('ne.fromSub', esc(sub))}</div>` : ''}
+    <div class="ne-grid">
+      <label class="ne-wide"><span class="muted small">${t('px.name')}</span><input id="ne-name" value="${esc(n.name)}" /></label>
+      <label class="ne-host"><span class="muted small">${t('px.host')}</span><input id="ne-server" spellcheck="false" value="${esc(n.server)}" /></label>
+      <label><span class="muted small">${t('px.port')}</span><input id="ne-port" inputmode="numeric" value="${n.port}" /></label>
+    </div>
+    ${proxy ? `<div class="ne-sec">${t('ne.proxy')}</div><div class="ne-grid">
+      <label><span class="muted small">${t('px.type')}</span><select id="ne-pxtype">
+        ${['socks5', 'http', 'https'].map((v) => `<option value="${v}" ${v === pxType ? 'selected' : ''}>${v.toUpperCase()}</option>`).join('')}</select></label>
+      ${neFields('protocol', n.protocol)}
+    </div>` : `<div class="ne-sec">${esc(n.summary.split(' · ')[0])}</div><div class="ne-grid">${neFields('protocol', n.protocol)}</div>
+      ${n.transport.type !== 'tcp' ? `<div class="ne-sec">${t('ne.transport', esc(n.transport.type))}</div><div class="ne-grid">${neFields('transport', n.transport)}</div>` : ''}
+      ${n.security.type !== 'none' ? `<div class="ne-sec">${esc(n.security.type.toUpperCase())}</div><div class="ne-grid">${neFields('security', n.security)}</div>` : ''}
+      <div class="muted small ne-note2">${t('ne.typeNote')}</div>`}
+    <label class="ne-check ne-show"><input type="checkbox" id="ne-show" /> ${t('ne.show')}</label>
+    <div class="modal-actions"><button class="btn ghost" data-a="0">${t('dlg.cancel')}</button><button class="btn primary" data-a="1">${t('ne.save')}</button></div>
+  </div>`;
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  $('#ne-show', wrap).addEventListener('change', (e) => $$('input[type="password"], input.was-secret', wrap).forEach((i) => {
+    i.classList.add('was-secret'); i.type = e.target.checked ? 'text' : 'password';
+  }));
+  const collect = () => {
+    const node = JSON.parse(JSON.stringify(base));
+    node.name = $('#ne-name', wrap).value.trim();
+    node.server = $('#ne-server', wrap).value.trim();
+    node.port = Number($('#ne-port', wrap).value.trim());
+    if (!node.server || /\s/.test(node.server)) throw new Error(t('ne.badServer'));
+    if (!Number.isInteger(node.port) || node.port < 1 || node.port > 65535) throw new Error(t('px.bad'));
+    $$('[data-g]', wrap).forEach((el) => {
+      const g = el.dataset.g, k = el.dataset.k, ty = el.dataset.t;
+      let v;
+      if (ty === 'bool') v = el.checked;
+      else if (ty === 'num') { v = Number(el.value.trim() || 0); if (!Number.isFinite(v) || v < 0) throw new Error(`${neLabel(k)}: ${t('ne.badNum')}`); v = Math.floor(v); }
+      else if (ty === 'list') v = el.value.split(',').map((x) => x.trim()).filter(Boolean);
+      else if (ty === 'nums') { v = el.value.split(',').map((x) => x.trim()).filter(Boolean).map(Number); if (v.some((x) => !Number.isInteger(x) || x < 0 || x > 255)) throw new Error(`${neLabel(k)}: ${t('ne.badNum')}`); }
+      else v = el.value.trim();
+      node[g][k] = v;
+    });
+    if (proxy) {
+      const ty = $('#ne-pxtype', wrap).value;
+      node.protocol.type = ty === 'socks5' ? 'socks' : 'http';
+      node.transport = { type: 'tcp' };
+      if (ty === 'https') {
+        if (node.security.type !== 'tls') node.security = { type: 'tls', sni: '', alpn: [], fingerprint: '', insecure: false };
+      } else node.security = { type: 'none' };
+    }
+    return node;
+  };
+  wrap.addEventListener('click', async (e) => {
+    if (e.target === wrap || e.target.closest('[data-a="0"]')) return close();
+    if (!e.target.closest('[data-a="1"]')) return;
+    let node;
+    try { node = collect(); } catch (err) { toast(err.message || String(err), 'error'); return; }
+    const key = (x) => JSON.stringify([x.server, x.port, x.protocol, x.transport, x.security]);
+    const onlyName = key(node) === key(base);
+    if (onlyName && node.name === base.name) return close();
+    close();
+    if (onlyName || !snap.status.connected) {
+      try { await invoke('update_node', { node }); toast(t('ne.saved', node.name || node.server), 'ok', 2500); } catch (err) { toast(err, 'error', 6000); }
+      snap = await invoke('snapshot').catch(() => snap);
+      renderLive();
+    } else {
+      await reloadAround(() => invoke('update_node', { node }), t('ne.reloadFor', node.name || node.server));
+    }
+    nodesKey = ''; renderNodes();
+  });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(wrap);
+  $('#ne-name', wrap).focus();
+}
+
 function renderNodes() {
   const filter = $('#node-filter').value.trim().toLowerCase();
-  const key = JSON.stringify([lang, nodeSort, smartShown, [...collapsed], snap.settings.smart_connect, snap.selected, filter, snap.nodes.map((n) => [n.id, n.name, n.engine, n.effective, n.latency, n.source]), snap.subscriptions]);
+  const key = JSON.stringify([lang, nodeSort, smartShown, [...collapsed], snap.settings.smart_connect, snap.selected, filter, snap.nodes.map((n) => [n.id, n.name, n.engine, n.effective, n.latency, n.source, n.server, n.port, n.summary]), snap.subscriptions]);
   if (key === nodesKey) return;
   nodesKey = key;
 
@@ -816,6 +927,10 @@ function renderNodes() {
       const name = (snap.nodes.find((x) => x.id === id) || {}).name || '';
       await reloadAround(() => invoke('set_node_engine', { id, engine }), t('nodes.engineFor', name));
       nodesKey = ''; renderNodes();
+    });
+    $('.edit', row).addEventListener('click', () => {
+      const n = snap.nodes.find((x) => x.id === id);
+      if (n) nodeEditor(n);
     });
     $('.del', row).addEventListener('click', () => withBusy(null, async () => {
       await invoke('remove_node', { id });

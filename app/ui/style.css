@@ -227,7 +227,7 @@ select { cursor: pointer; }
 .filter-row input { width: 340px; }
 .node-list { display: flex; flex-direction: column; gap: 6px; }
 .node {
-  display: grid; grid-template-columns: 22px 1fr auto auto 140px 32px; align-items: center; gap: 14px;
+  display: grid; grid-template-columns: 22px 1fr auto auto 140px 32px 32px; align-items: center; gap: 14px;
   padding: 11px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; cursor: pointer;
   transition: border-color .15s, background .15s;
 }
@@ -386,13 +386,14 @@ select { cursor: pointer; }
   .smart { flex-wrap: wrap; }
   .smart-state { text-align: left; max-width: none; }
   /* nodes: name and details wrap; engine, latency and engine choice on a second line */
-  .node { grid-template-columns: 18px auto minmax(0, 1fr) auto 32px; grid-template-areas: "radio info info info del" ". badge lat sel sel"; gap: 8px 10px; padding: 12px; align-items: center; }
+  .node { grid-template-columns: 18px auto minmax(0, 1fr) auto 32px 32px; grid-template-areas: "radio info info info edit del" ". badge lat sel sel sel"; gap: 8px 10px; padding: 12px; align-items: center; }
   .node > .radio { grid-area: radio; align-self: start; margin-top: 2px; }
   .node > div:nth-child(2) { grid-area: info; }
   .node > .badge { grid-area: badge; }
   .node > .lat { grid-area: lat; text-align: left; min-width: 0; }
   .node > .engine-sel { grid-area: sel; justify-self: end; }
-  .node > .icon-btn { grid-area: del; align-self: start; }
+  .node > .icon-btn.del { grid-area: del; align-self: start; }
+  .node > .icon-btn.edit { grid-area: edit; align-self: start; }
   .node-name, .node-meta { white-space: normal; overflow-wrap: anywhere; }
   .node-meta { line-height: 1.4; }
 
@@ -444,6 +445,20 @@ select { cursor: pointer; }
 .modal-wrap { position: fixed; inset: 0; z-index: 20; background: rgba(5, 6, 10, .72); display: grid; place-items: center; padding: 20px; animation: fade .15s ease; }
 .modal { width: min(420px, 100%); padding: 20px; box-shadow: 0 20px 60px rgba(0, 0, 0, .5); }
 .modal-text { line-height: 1.5; white-space: pre-wrap; }
+.node-editor { width: min(620px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; }
+.node-editor h3 { margin: 0 0 12px; }
+.ne-grid { display: grid; grid-template-columns: 1fr 1fr 110px; gap: 10px 12px; }
+.ne-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ne-grid input, .ne-grid select { width: 100%; }
+.ne-grid .ne-wide { grid-column: 1 / -1; }
+.ne-grid .ne-host { grid-column: span 2; }
+.ne-grid label.ne-check, .node-editor .ne-check { flex-direction: row; align-items: center; gap: 8px; align-self: end; padding-bottom: 8px; }
+.ne-sec { margin: 16px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.ne-note { opacity: .7; }
+.ne-note2 { margin-top: 12px; }
+.ne-show { margin-top: 14px; }
+.ne-warn { padding: 8px 10px; margin-bottom: 12px; border-radius: 8px; background: rgba(255, 190, 80, .1); color: #ffcf80; }
+@media (max-width: 640px) { .ne-grid { grid-template-columns: 1fr 1fr; } .ne-grid .ne-host { grid-column: 1 / -1; } }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
 /* ---------- app picker (Android) */

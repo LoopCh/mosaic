@@ -858,17 +858,44 @@ $('#import-qr').addEventListener('click', (e) => withBusy(e.currentTarget, async
   $('#import-text').dispatchEvent(new Event('input'));
   $('#import-go').click();
 }));
-const isUrl = (s) => /^https?:\/\/\S+$/.test(s);
+// An http(s) address with nothing after host:port (except a name) is a proxy, not a subscription.
+const isProxyUrl = (s) => /^https?:\/\/([^\/?#@\s]+@)?[^\/?#\s]+:\d+\/?(#\S*)?$/i.test(s);
+const isUrl = (s) => /^https?:\/\/\S+$/.test(s) && !isProxyUrl(s);
 $('#import-text').addEventListener('input', () => {
   $('#import-hint').textContent = isUrl($('#import-text').value.trim()) ? t('nodes.asSub') : '';
 });
+function importDone(res) {
+  const errs = res.errors.length ? `\n${t('nodes.skipped', res.errors.length)}\n` + res.errors.slice(0, 5).join('\n') : '';
+  toast(t('nodes.added', res.added, res.updated) + errs, res.added + res.updated ? 'ok' : 'error', errs ? 9000 : 3000);
+  return res.added + res.updated > 0;
+}
 $('#import-go').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   const text = $('#import-text').value.trim();
   if (!text) return;
   const res = isUrl(text) ? await invoke('add_subscription', { url: text }) : await invoke('import_text', { text });
-  const errs = res.errors.length ? `\n${t('nodes.skipped', res.errors.length)}\n` + res.errors.slice(0, 5).join('\n') : '';
-  toast(t('nodes.added', res.added, res.updated) + errs, res.added + res.updated ? 'ok' : 'error', errs ? 9000 : 3000);
-  if (res.added + res.updated) { $('#import-text').value = ''; $('#import-hint').textContent = ''; $('#import-panel').classList.add('hidden'); }
+  if (importDone(res)) { $('#import-text').value = ''; $('#import-hint').textContent = ''; $('#import-panel').classList.add('hidden'); }
+  snap = await invoke('snapshot'); nodesKey = ''; renderNodes();
+}));
+
+// A SOCKS5 / HTTP(S) proxy by hand: becomes a share link (socks5://user:pass@host:port#name)
+// and goes through the same import — so it can be exported and shared like any node.
+$('#proxy-toggle').addEventListener('click', () => { $('#proxy-form').classList.toggle('hidden'); $('#px-host').focus(); });
+$('#px-type').addEventListener('change', () => { $('#px-port').placeholder = $('#px-type').value === 'socks5' ? '1080' : '8080'; });
+$('#px-add').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const ty = $('#px-type').value;
+  let host = $('#px-host').value.trim().replace(/^\w+:\/\//, '').replace(/\/.*$/, '');
+  const port = Number($('#px-port').value.trim());
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) { toast(t('px.bad'), 'error'); return; }
+  if (host.includes(':') && !host.startsWith('[')) host = `[${host}]`;
+  const user = $('#px-user').value, pass = $('#px-pass').value, name = $('#px-name').value.trim();
+  const enc = encodeURIComponent;
+  const auth = user ? enc(user) + (pass ? ':' + enc(pass) : '') + '@' : '';
+  const link = `${ty}://${auth}${host}:${port}` + (name ? '#' + enc(name) : '');
+  if (importDone(await invoke('import_text', { text: link }))) {
+    for (const id of ['#px-host', '#px-port', '#px-user', '#px-pass', '#px-name']) $(id).value = '';
+    $('#proxy-form').classList.add('hidden');
+    $('#import-panel').classList.add('hidden');
+  }
   snap = await invoke('snapshot'); nodesKey = ''; renderNodes();
 }));
 $('#btn-test').addEventListener('click', (e) => {

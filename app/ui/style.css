@@ -214,6 +214,15 @@ select { cursor: pointer; }
 /* ---------- nodes */
 .import { padding: 14px; margin-bottom: 16px; }
 .import textarea { width: 100%; min-height: 120px; resize: vertical; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+.proxy-form { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.px-grid { display: grid; grid-template-columns: 120px 1fr 1fr 100px; gap: 10px 12px; }
+.px-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.px-grid input, .px-grid select { width: 100%; }
+.px-grid .px-host { grid-column: span 2; }
+.px-grid .px-cred { grid-column: span 2; }
+.px-grid .px-name { grid-column: 1 / -1; }
+.proxy-form .row { margin-top: 12px; }
+@media (max-width: 640px) { .px-grid { grid-template-columns: 1fr 1fr; } .px-grid .px-host, .px-grid .px-name { grid-column: 1 / -1; } .px-grid .px-cred { grid-column: auto; } }
 .filter-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .filter-row input { width: 340px; }
 .node-list { display: flex; flex-direction: column; gap: 6px; }

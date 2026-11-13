@@ -6,10 +6,23 @@ use super::{or_default, sni_or, Slot};
 use crate::model::{Node, Protocol, Security, Transport};
 
 pub fn supports(n: &Node) -> bool {
-    matches!(
-        n.protocol,
-        Protocol::Vless { .. } | Protocol::Vmess { .. } | Protocol::Trojan { .. } | Protocol::Shadowsocks { .. }
-    )
+    match n.protocol {
+        Protocol::Vless { .. } | Protocol::Vmess { .. } | Protocol::Trojan { .. } | Protocol::Shadowsocks { .. } => true,
+        // Plain proxies: no transports; an HTTP proxy may sit behind TLS.
+        Protocol::Socks { .. } => n.transport == Transport::Tcp && n.security == Security::None,
+        Protocol::Http { .. } => n.transport == Transport::Tcp && !matches!(n.security, Security::Reality { .. }),
+        _ => false,
+    }
+}
+
+/// `{ "address", "port", "users": [{ "user", "pass" }] }` — the server entry of Xray's
+/// socks / http outbounds; no login, no `users`.
+fn proxy_server(n: &Node, username: &str, password: &str) -> Value {
+    let mut srv = json!({ "address": n.server, "port": n.port });
+    if !username.is_empty() {
+        srv["users"] = json!([{ "user": username, "pass": password }]);
+    }
+    srv
 }
 
 pub fn compile(slots: &[Slot]) -> Result<Value, String> {
@@ -70,6 +83,16 @@ fn outbound(n: &Node) -> Result<Value, String> {
         Protocol::Shadowsocks { method, password } => json!({
             "protocol": "shadowsocks",
             "settings": { "servers": [{ "address": n.server, "port": n.port, "method": method, "password": password }] },
+            "streamSettings": stream
+        }),
+        Protocol::Socks { username, password } => json!({
+            "protocol": "socks",
+            "settings": { "servers": [proxy_server(n, username, password)] },
+            "streamSettings": stream
+        }),
+        Protocol::Http { username, password } => json!({
+            "protocol": "http",
+            "settings": { "servers": [proxy_server(n, username, password)] },
             "streamSettings": stream
         }),
         other => return Err(format!("Xray does not support {}", other.name())),

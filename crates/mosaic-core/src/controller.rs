@@ -1487,7 +1487,7 @@ impl Controller {
         let mut groups: HashMap<EngineKind, Vec<Slot>> = HashMap::new();
         let mut upstreams = HashMap::new();
         for ((n, k), port) in plan.into_iter().zip(ports) {
-            upstreams.insert(n.id.clone(), Upstream { port, name: n.name.clone(), engine: k });
+            upstreams.insert(n.id.clone(), Upstream { port, name: n.name.clone(), engine: k, udp: n.protocol.udp() });
             groups.entry(k).or_default().push((n, port));
         }
         let mut procs = Vec::new();

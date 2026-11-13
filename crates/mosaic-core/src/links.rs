@@ -93,6 +93,8 @@ pub fn parse_link(link: &str) -> Result<Node, String> {
         "hy2" | "hysteria2" => parse_hy2(link),
         "tuic" => parse_tuic(link),
         "wireguard" | "wg" => parse_wg_link(link),
+        "socks" | "socks5" | "socks5h" => parse_proxy(link, false),
+        "http" | "https" => parse_proxy(link, true),
         "" => Err("no scheme".into()),
         other => Err(format!("{other}:// links are not supported yet")),
     }
@@ -280,6 +282,42 @@ fn parse_trojan(link: &str) -> Result<Node, String> {
     }
     let p = Protocol::Trojan { password: u.user.clone() };
     Ok(node(link, u.display_name(), u.host.clone(), u.port, p, transport_from(&u)?, security_from(&u, true)))
+}
+
+/// `socks5://user:pass@host:port#name`, `http://…`, `https://…` (an HTTP proxy over TLS);
+/// also v2rayN's `socks://BASE64(user:pass)@host:port`. Login and password are
+/// percent-encoded when they contain `@ : / #`.
+fn parse_proxy(link: &str, http: bool) -> Result<Node, String> {
+    let after = link.split_once("://").map(|x| x.1).unwrap_or("");
+    let main = after.split(['?', '#']).next().unwrap_or("");
+    if main.trim_end_matches('/').contains('/') {
+        return Err("this looks like a subscription address, not a proxy (a proxy is just host:port)".into());
+    }
+    let u = parse_url(link)?;
+    let mut creds = u.user.clone();
+    if !creds.is_empty() && !creds.contains(':') {
+        if let Some(d) = b64::decode_str(&creds) {
+            if d.contains(':') {
+                creds = d;
+            }
+        }
+    }
+    let (username, password) = match creds.split_once(':') {
+        Some((a, b)) => (a.to_string(), b.to_string()),
+        None => (creds, String::new()),
+    };
+    let tls = link.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://"));
+    let (p, security) = if http {
+        let sec = if tls {
+            Security::Tls { sni: u.q_any(&["sni", "peer"]), alpn: Vec::new(), fingerprint: String::new(), insecure: u.flag(&["allowInsecure", "insecure"]) }
+        } else {
+            Security::None
+        };
+        (Protocol::Http { username, password }, sec)
+    } else {
+        (Protocol::Socks { username, password }, Security::None)
+    };
+    Ok(node(link, u.display_name(), u.host.clone(), u.port, p, Transport::Tcp, security))
 }
 
 fn js(v: &serde_json::Value, k: &str) -> String {
@@ -537,6 +575,19 @@ mod tests {
         assert_eq!(h.supported_engines(), vec![EngineKind::Singbox]);
         let t = parse_link("tuic://uuid:pw@t.example.com:443?congestion_control=bbr&alpn=h3&sni=t.example.com#T").unwrap();
         assert!(matches!(t.protocol, Protocol::Tuic { ref password, .. } if password == "pw"));
+
+        let s = parse_link("socks5://alice:p%40ss@pl.example.com:1080#Poland").unwrap();
+        assert_eq!((s.name.as_str(), s.server.as_str(), s.port), ("Poland", "pl.example.com", 1080));
+        assert!(matches!(s.protocol, Protocol::Socks { ref username, ref password } if username == "alice" && password == "p@ss"));
+        // v2rayN: socks://base64(user:pass)@host:port
+        let v = parse_link("socks://dXNlcjpwYXNz@1.2.3.4:1080").unwrap();
+        assert!(matches!(v.protocol, Protocol::Socks { ref username, ref password } if username == "user" && password == "pass"));
+        let h = parse_link("http://10.0.0.1:3128").unwrap();
+        assert!(matches!(h.protocol, Protocol::Http { ref username, .. } if username.is_empty()) && h.security == Security::None);
+        let hs = parse_link("https://bob:pw@proxy.example.com:8443/").unwrap();
+        assert!(matches!(hs.security, Security::Tls { .. }));
+        assert_eq!(hs.summary(), "HTTPS proxy · login");
+        assert!(parse_link("https://sub.example.com:8443/api/v1/client/subscribe?token=1").is_err());
         let w = parse_link("wireguard://cHJpdmF0ZQ%3D%3D@1.1.1.1:51820?publickey=cHVibGlj&address=10.0.0.2,fd00::2&mtu=1280&reserved=1,2,3#W").unwrap();
         assert!(matches!(w.protocol, Protocol::Wireguard { ref private_key, ref local_address, ref reserved, .. }
             if private_key == "cHJpdmF0ZQ==" && local_address == &vec!["10.0.0.2/32".to_string(), "fd00::2/128".to_string()] && reserved == &vec![1u8, 2, 3]));

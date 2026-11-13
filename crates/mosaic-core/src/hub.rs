@@ -35,6 +35,8 @@ pub struct Upstream {
     pub port: u16,
     pub name: String,
     pub engine: EngineKind,
+    /// The node carries UDP (an HTTP proxy does not).
+    pub udp: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -106,7 +108,29 @@ impl Routing {
     /// send direct goes through the active node instead (or is blocked if there is none),
     /// so pages cannot learn the real IP. Calls themselves keep working through the node.
     /// Checks between devices of the local network stay local.
+    /// The final say over a UDP flow: WebRTC protection, then whether the chosen node can
+    /// carry UDP at all — an HTTP proxy cannot, and a quick refusal lets the app fall back to
+    /// TCP (QUIC → HTTPS) instead of waiting for packets that go nowhere.
     pub fn guard_udp(&self, decided: (Decision, String), host: &str, port: u16, process: Option<&str>, payload: &[u8]) -> (Decision, String) {
+        let (d, rule) = self.stun_guard(decided, host, port, process, payload);
+        match &d {
+            Decision::Via(u) if !u.udp => {
+                if let Some(l) = &self.logs {
+                    if stun_seen().allow(&format!("no-udp|{}|{host}:{port}", u.name), 60_000) {
+                        let who = process.map(|p| format!("{p} → ")).unwrap_or_default();
+                        l.warn(format!(
+                            "[conn] UDP {who}{host}:{port} not sent: '{}' is an HTTP proxy, it carries TCP only — the app falls back to TCP (QUIC → HTTPS)",
+                            u.name
+                        ));
+                    }
+                }
+                (Decision::Block, format!("{rule} · no UDP via {}", u.name))
+            }
+            _ => (d, rule),
+        }
+    }
+
+    fn stun_guard(&self, decided: (Decision, String), host: &str, port: u16, process: Option<&str>, payload: &[u8]) -> (Decision, String) {
         let local = match host.parse::<IpAddr>() {
             Ok(IpAddr::V4(v4)) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64),
             Ok(IpAddr::V6(v6)) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
@@ -814,8 +838,8 @@ mod tests {
             ],
             "proxy",
         );
-        r.upstreams.insert("a".into(), Upstream { port: 1, name: "A".into(), engine: EngineKind::Xray });
-        r.upstreams.insert("b".into(), Upstream { port: 2, name: "B".into(), engine: EngineKind::Singbox });
+        r.upstreams.insert("a".into(), Upstream { port: 1, name: "A".into(), engine: EngineKind::Xray, udp: true });
+        r.upstreams.insert("b".into(), Upstream { port: 2, name: "B".into(), engine: EngineKind::Singbox, udp: true });
         r.selected = Some("a".into());
         r.strategy = strategy;
         r

@@ -113,9 +113,30 @@ pub enum Protocol {
         #[serde(default)]
         reserved: Vec<u8>,
     },
+    /// A plain SOCKS5 proxy (optionally with a login). Carries TCP and UDP. Not encrypted:
+    /// the traffic to the proxy is as visible as without it (sites themselves use HTTPS).
+    Socks {
+        #[serde(default)]
+        username: String,
+        #[serde(default)]
+        password: String,
+    },
+    /// An HTTP proxy (CONNECT), optionally over TLS (an "HTTPS proxy") and with a login.
+    /// TCP only: UDP (QUIC, calls) sent to it is refused so that apps fall back to TCP.
+    Http {
+        #[serde(default)]
+        username: String,
+        #[serde(default)]
+        password: String,
+    },
 }
 
 impl Protocol {
+    /// Can the node carry UDP at all?
+    pub fn udp(&self) -> bool {
+        !matches!(self, Protocol::Http { .. })
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Protocol::Vless { .. } => "VLESS",
@@ -125,6 +146,8 @@ impl Protocol {
             Protocol::Hysteria2 { .. } => "Hysteria2",
             Protocol::Tuic { .. } => "TUIC",
             Protocol::Wireguard { .. } => "WireGuard",
+            Protocol::Socks { .. } => "SOCKS5",
+            Protocol::Http { .. } => "HTTP",
         }
     }
 }
@@ -229,6 +252,17 @@ impl Node {
         match &self.protocol {
             Protocol::Hysteria2 { .. } | Protocol::Tuic { .. } => format!("{} · quic", self.protocol.name()),
             Protocol::Wireguard { .. } | Protocol::Shadowsocks { .. } => self.protocol.name().to_string(),
+            Protocol::Socks { username, .. } | Protocol::Http { username, .. } => {
+                let name = match (&self.protocol, &self.security) {
+                    (Protocol::Http { .. }, Security::Tls { .. }) => "HTTPS",
+                    _ => self.protocol.name(),
+                };
+                if username.is_empty() {
+                    format!("{name} proxy")
+                } else {
+                    format!("{name} proxy · login")
+                }
+            }
             _ => format!("{} · {} · {}", self.protocol.name(), self.transport.name(), self.security.name()),
         }
     }

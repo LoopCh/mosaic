@@ -7,7 +7,11 @@ use super::{or_default, sni_or, Slot};
 use crate::model::{Node, Protocol, Security, Transport};
 
 pub fn supports(n: &Node) -> bool {
-    !matches!(n.transport, Transport::Xhttp { .. })
+    match n.protocol {
+        Protocol::Socks { .. } => n.transport == Transport::Tcp && n.security == Security::None,
+        Protocol::Http { .. } => n.transport == Transport::Tcp && !matches!(n.security, Security::Reality { .. }),
+        _ => !matches!(n.transport, Transport::Xhttp { .. }),
+    }
 }
 
 pub fn compile(slots: &[Slot]) -> Result<Value, String> {
@@ -122,6 +126,22 @@ fn outbound(n: &Node) -> Result<Value, String> {
             });
             o["tls"] = tls(n, true, &["h3"]).unwrap_or(Value::Null);
             return Ok(o);
+        }
+        Protocol::Socks { username, password } => {
+            let mut o = json!({ "type": "socks", "server": n.server, "server_port": n.port, "version": "5" });
+            if !username.is_empty() {
+                o["username"] = json!(username);
+                o["password"] = json!(password);
+            }
+            o
+        }
+        Protocol::Http { username, password } => {
+            let mut o = json!({ "type": "http", "server": n.server, "server_port": n.port });
+            if !username.is_empty() {
+                o["username"] = json!(username);
+                o["password"] = json!(password);
+            }
+            o
         }
         Protocol::Wireguard { private_key, peer_public_key, pre_shared_key, local_address, mtu, reserved } => {
             let mut peer = json!({

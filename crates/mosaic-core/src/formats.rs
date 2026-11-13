@@ -155,7 +155,7 @@ fn clash_proxy(p: &Value) -> Result<Option<Node>, String> {
     let port = port_of(p, "port");
     let need = |what: &str| format!("missing `{what}`");
     let (server, port) = match ty.as_str() {
-        "ss" | "shadowsocks" | "vmess" | "vless" | "trojan" | "hysteria2" | "hy2" | "tuic" | "wireguard" => {
+        "ss" | "shadowsocks" | "vmess" | "vless" | "trojan" | "hysteria2" | "hy2" | "tuic" | "wireguard" | "socks5" | "http" => {
             if server.is_empty() {
                 return Err(need("server"));
             }
@@ -203,6 +203,15 @@ fn clash_proxy(p: &Value) -> Result<Option<Node>, String> {
             };
             make(name, server, port, proto, Transport::Tcp, clash_security(p, true))
         }
+        "socks5" => make(name, server, port, Protocol::Socks { username: s(p, "username"), password: s(p, "password") }, Transport::Tcp, Security::None),
+        "http" => make(
+            name,
+            server,
+            port,
+            Protocol::Http { username: s(p, "username"), password: s(p, "password") },
+            Transport::Tcp,
+            clash_security(p, false),
+        ),
         "wireguard" => {
             let mut addrs = Vec::new();
             for k in ["ip", "ipv6"] {
@@ -345,6 +354,23 @@ fn singbox_outbound(o: &Value) -> Result<Option<Node>, String> {
                 },
             };
             make(name, server, port, proto, sb_transport(o)?, sb_security(o))
+        }
+        "socks" | "http" => {
+            let server = s(o, "server");
+            if server.is_empty() {
+                return Err(need("server"));
+            }
+            let port = port_of(o, "server_port").ok_or_else(|| need("server_port"))?;
+            let (username, password) = (s(o, "username"), s(o, "password"));
+            if ty == "socks" {
+                let v = s(o, "version");
+                if !(v.is_empty() || v == "5") {
+                    return Err(format!("SOCKS{v} is not supported (only SOCKS5)"));
+                }
+                make(name, server, port, Protocol::Socks { username, password }, Transport::Tcp, Security::None)
+            } else {
+                make(name, server, port, Protocol::Http { username, password }, Transport::Tcp, sb_security(o))
+            }
         }
         other => return Err(format!("type `{other}` is not supported")),
     };

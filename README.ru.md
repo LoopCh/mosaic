@@ -138,7 +138,7 @@
 
 | | |
 |---|---|
-| **Протоколы** | VLESS (включая REALITY, XTLS Vision), VMess, Trojan, Shadowsocks, Hysteria2, TUIC, WireGuard |
+| **Протоколы** | VLESS (включая REALITY, XTLS Vision), VMess, Trojan, Shadowsocks, Hysteria2, TUIC, WireGuard, SOCKS5, HTTP(S)-прокси (с логином) |
 | **Транспорты** | TCP, WebSocket, gRPC, HTTPUpgrade, XHTTP · Hysteria2 и TUIC работают поверх QUIC |
 | **Импорт** | Ссылки, подписки в base64, Clash / mihomo (YAML), sing-box (JSON), QR-коды (Android) |
 | **Ядра** | Xray-core и sing-box — для каждого узла автоматически или вручную |

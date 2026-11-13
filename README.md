@@ -140,7 +140,7 @@ clipboard or a QR code, a Quick Settings tile, connect on boot and the system's 
 
 | | |
 |---|---|
-| **Protocols** | VLESS (incl. REALITY, XTLS Vision), VMess, Trojan, Shadowsocks, Hysteria2, TUIC, WireGuard |
+| **Protocols** | VLESS (incl. REALITY, XTLS Vision), VMess, Trojan, Shadowsocks, Hysteria2, TUIC, WireGuard, SOCKS5, HTTP(S) proxy (with login) |
 | **Transports** | TCP, WebSocket, gRPC, HTTPUpgrade, XHTTP · Hysteria2 and TUIC run over QUIC |
 | **Import** | Share links, base64 subscriptions, Clash / mihomo YAML, sing-box JSON, QR codes (Android) |
 | **Engines** | Xray-core and sing-box, chosen per node automatically or by hand |

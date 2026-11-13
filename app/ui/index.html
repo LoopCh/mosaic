@@ -107,7 +107,23 @@
           <button class="btn primary" id="import-go" data-i18n="nodes.add"></button>
           <button class="btn ghost" id="import-paste" data-i18n="nodes.paste"></button>
           <button class="btn ghost android-only" id="import-qr" data-i18n="nodes.qr"></button>
+          <button class="btn ghost" id="proxy-toggle" data-i18n="px.open"></button>
           <span class="muted small" id="import-hint"></span>
+        </div>
+        <div class="proxy-form hidden" id="proxy-form">
+          <div class="px-grid">
+            <label><span class="muted small" data-i18n="px.type"></span>
+              <select id="px-type"><option value="socks5">SOCKS5</option><option value="http">HTTP</option><option value="https">HTTPS</option></select></label>
+            <label class="px-host"><span class="muted small" data-i18n="px.host"></span><input id="px-host" spellcheck="false" placeholder="pl.example.com" /></label>
+            <label><span class="muted small" data-i18n="px.port"></span><input id="px-port" inputmode="numeric" placeholder="1080" /></label>
+            <label class="px-cred"><span class="muted small" data-i18n="px.user"></span><input id="px-user" spellcheck="false" autocomplete="off" data-i18n-ph="px.optional" /></label>
+            <label class="px-cred"><span class="muted small" data-i18n="px.pass"></span><input id="px-pass" type="password" autocomplete="new-password" data-i18n-ph="px.optional" /></label>
+            <label class="px-name"><span class="muted small" data-i18n="px.name"></span><input id="px-name" data-i18n-ph="px.namePh" /></label>
+          </div>
+          <div class="row">
+            <button class="btn primary" id="px-add" data-i18n="px.add"></button>
+            <span class="muted small" data-i18n="px.hint"></span>
+          </div>
         </div>
       </div>
       <div class="card smart hidden" id="smart-card">

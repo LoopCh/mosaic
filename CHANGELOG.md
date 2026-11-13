@@ -2,6 +2,19 @@
 
 Newest first. Versions before 0.5 cover Windows only.
 
+## 0.11.2 — SOCKS5 and HTTP proxies as nodes
+
+- **New node types: SOCKS5 and HTTP / HTTPS proxies**, with or without a login. Add one by hand (Nodes → Add →
+  “SOCKS5 / HTTP proxy…”: type, server, port, login, password, name) or paste a link: `socks5://user:pass@host:port#name`,
+  `socks://BASE64(user:pass)@host:port` (v2rayN), `http://…`, `https://…` (an HTTP proxy over TLS). Clash (`socks5`,
+  `http`) and sing-box (`socks`, `http`) configs import them too.
+- They are nodes like any other: select one, or send only some sites to it with a rule — e.g. `youtube.com →
+  Poland proxy`, everything else through your main node or direct. Both engines run them (Xray and sing-box).
+- **HTTP proxies carry no UDP**: UDP for them (QUIC, calls) is refused at once, so apps fall back to TCP instead of
+  waiting; the log says so once a minute per destination. SOCKS5 carries UDP.
+- An `http(s)://host:port` address with nothing after the port is now read as a proxy; anything with a path stays
+  a subscription.
+
 ## 0.11.1 — detailed logs, a kill switch that never pretends
 
 - **Verbose log** (Logs → “every connection”, off by default): every connection is written — app, destination,

@@ -222,13 +222,69 @@ fn labels(ui_language: &str) -> Labels {
     }
 }
 
+/// Where the window was when it went to the tray: a new one opens in the same place.
+static LAST_GEOMETRY: std::sync::Mutex<Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>, bool)>> = std::sync::Mutex::new(None);
+
+fn icon_image(st: u8) -> tauri::image::Image<'static> {
+    let rgba: &'static [u8] = match st {
+        2 => include_bytes!("../icons/state/busy-64.rgba"),
+        3 => include_bytes!("../icons/state/on-64.rgba"),
+        _ => include_bytes!("../icons/state/off-64.rgba"),
+    };
+    tauri::image::Image::new(rgba, 64, 64)
+}
+
+/// The window exists only while it is open. In the tray there is no window at all — and no
+/// WebView2 / WebKitGTK behind it (hundreds of MB and a GPU process kept busy for nothing);
+/// the VPN does not need it. A click on the tray icon builds it again in a fraction of a second.
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.show();
-        let _ = w.unminimize();
-        let _ = w.set_focus();
-        let _ = w.emit("mosaic://visible", true);
+        reveal(&w);
+        return;
     }
+    // Building a WebView2 window inside an event handler (tray click, menu) deadlocks on
+    // Windows: build it from another thread. One at a time — a double click opens one window.
+    static OPENING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if OPENING.swap(true, Relaxed) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Some(w) = build_main(&app) {
+            reveal(&w);
+        }
+        OPENING.store(false, Relaxed);
+    });
+}
+
+fn reveal(w: &tauri::WebviewWindow) {
+    let _ = w.show();
+    let _ = w.unminimize();
+    let _ = w.set_focus();
+    let _ = w.emit("mosaic://visible", true);
+}
+
+fn build_main(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(w) = app.get_webview_window("main") {
+        return Some(w);
+    }
+    let cfg = app.config().app.windows.iter().find(|w| w.label == "main").cloned()?;
+    let w = match tauri::WebviewWindowBuilder::from_config(app, &cfg).and_then(|b| b.build()) {
+        Ok(w) => w,
+        Err(e) => {
+            app.state::<Arc<Controller>>().logs.error(format!("[app] cannot open the window: {e}"));
+            return None;
+        }
+    };
+    if let Some((pos, size, maximized)) = *LAST_GEOMETRY.lock().unwrap() {
+        let _ = w.set_size(size);
+        let _ = w.set_position(pos);
+        if maximized {
+            let _ = w.maximize();
+        }
+    }
+    let _ = w.set_icon(icon_image(ICON_STATE.load(Relaxed)));
+    Some(w)
 }
 
 /// Windows menus treat '&' as a mnemonic marker.
@@ -274,12 +330,7 @@ fn set_state_icon(app: &AppHandle, st: IconState) {
     if ICON_STATE.swap(st as u8, Relaxed) == st as u8 {
         return;
     }
-    let rgba: &'static [u8] = match st {
-        IconState::Off => include_bytes!("../icons/state/off-64.rgba"),
-        IconState::Busy => include_bytes!("../icons/state/busy-64.rgba"),
-        IconState::On => include_bytes!("../icons/state/on-64.rgba"),
-    };
-    let img = tauri::image::Image::new(rgba, 64, 64);
+    let img = icon_image(st as u8);
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_icon(Some(img.clone()));
     }
@@ -465,13 +516,16 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+            if let WindowEvent::CloseRequested { .. } = event {
                 let ctl = window.state::<Arc<Controller>>();
                 if window.label() == "main" && ctl.close_to_tray.load(Relaxed) {
-                    let _ = window.hide();
-                    // The page keeps running in a hidden window: tell it to stop drawing.
-                    let _ = window.emit("mosaic://visible", false);
-                    api.prevent_close();
+                    // To the tray: the window closes for real (see `show_main`); the app stays,
+                    // `ExitRequested` below keeps it running. Remember where it was.
+                    if let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) {
+                        let maximized = window.is_maximized().unwrap_or(false);
+                        let keep = if maximized { LAST_GEOMETRY.lock().unwrap().map(|(p, s, _)| (p, s)).unwrap_or((pos, size)) } else { (pos, size) };
+                        *LAST_GEOMETRY.lock().unwrap() = Some((keep.0, keep.1, maximized));
+                    }
                 }
             }
             // Minimized or restored (the taskbar): the same for the page.
@@ -484,7 +538,14 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("failed to start Mosaic")
-        .run(move |_app, event| {
+        .run(move |app, event| {
+            // The last window closed: with "close to tray" Mosaic lives on in the tray.
+            // `app.exit(…)` (Quit, update) passes a code and is not stopped.
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
+                if app.state::<Arc<Controller>>().close_to_tray.load(Relaxed) {
+                    api.prevent_exit();
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 // Restore the system proxy, remove WFP filters and stop engines.
                 tauri::async_runtime::block_on(on_exit.disconnect());

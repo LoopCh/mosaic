@@ -123,8 +123,24 @@ let last = null;
 
 // ------------------------------------------------------------------ navigation
 $$('.nav button').forEach((b) => b.addEventListener('click', () => show(b.dataset.view)));
+// The window is destroyed when it goes to the tray and built again when opened: come back to
+// the same screen if it was closed recently (a fresh start opens Home).
+function saveView() { try { localStorage.setItem('mosaic.view', JSON.stringify({ v: view, at: Date.now() })); } catch {} }
+window.addEventListener('pagehide', saveView);
+window.addEventListener('beforeunload', saveView);
+let viewRestored = false;
+function restoreView() {
+  if (viewRestored) return;
+  viewRestored = true;
+  try {
+    const s = JSON.parse(localStorage.getItem('mosaic.view') || 'null');
+    if (s && s.v && s.v !== 'home' && Date.now() - s.at < 30 * 60e3 && $('#view-' + s.v)) show(s.v);
+  } catch {}
+}
+
 function show(v) {
   view = v;
+  saveView();
   $$('.nav button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
   $$('.view').forEach((s) => s.classList.toggle('active', s.id === 'view-' + v));
   if (v === 'rules') { rulesDraft = null; renderRules(); }
@@ -183,6 +199,7 @@ async function poll() {
     if (l !== lang) { lang = l; rerenderAll(); }
     applyPlatform();
     renderStatus(true);
+    restoreView();
     if (!appVisible) { pollTimer = setTimeout(poll, 5000); return; }
     renderUpdateBanner();
     if (view === 'home') renderHome();

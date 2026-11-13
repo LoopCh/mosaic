@@ -29,8 +29,12 @@ Newest first. Versions before 0.5 cover Windows only.
 - **Less GPU and memory (Windows)**: the connected mosaic no longer animates `filter`/`box-shadow` (16 tiles
   repainted 60 times a second) — only the opacity of a pre-drawn glow breathes, which the GPU blends without
   repainting (main-thread work on Home: about 25× less). The traffic chart re-allocated its canvas every second
-  at 125 % / 150 % display scaling; fixed. Hidden in the tray or minimized, the page stops all animations and
-  redraws and polls every 5 s instead of every second.
+  at 125 % / 150 % display scaling; fixed. Minimized, the page stops all animations and redraws and polls
+  every 5 s.
+- **Nothing of the window in the tray**: closing to the tray now destroys the window together with its WebView2
+  (Windows) / WebKitGTK (Linux) processes — before, a hidden window kept hundreds of MB and the GPU process
+  busy. The tray icon builds it again (same place and size, the same screen if it was closed within 30 minutes).
+  Autostart with `--minimized` creates no window at all. The VPN does not depend on the window.
 - **Diagnostic report**: kill switch state and the routing table (`ip route`, `ip -6 route`, `ip rule`, links) on
   Linux, the recent failed connections, and the log with connection lines capped so they do not push out the
   rest. Public IPv6 addresses are now hidden as well.

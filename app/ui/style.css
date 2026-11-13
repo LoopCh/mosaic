@@ -144,8 +144,15 @@ select { cursor: pointer; }
 @keyframes reshuffle { 35% { transform: rotate(-6deg) scale(.94); } 70% { transform: rotate(3deg) scale(1.02); } }
 /* connected: the picture is complete and breathes; more traffic → brighter */
 .hero[data-phase="on"] .mosaic { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 0 calc(40px + var(--act) * 40px) rgba(124, 92, 255, calc(.25 + var(--act) * .25)), 0 18px 50px rgba(0, 0, 0, .45); }
-.hero[data-phase="on"] .mosaic i { animation: breathe 4.2s ease-in-out infinite; animation-delay: calc(var(--d) * 170ms); }
-@keyframes breathe { 50% { filter: brightness(calc(1.12 + var(--act) * .4)) saturate(1.1); box-shadow: 0 0 calc(12px + var(--act) * 22px) var(--g); } }
+/* The glow is drawn once (a layer over each tile) and only its opacity breathes: the GPU
+   blends it without repainting. Animating filter / box-shadow repainted 16 tiles 60 times a second. */
+.mosaic i { position: relative; }
+.mosaic i::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0;
+  background: rgba(255, 255, 255, calc(.12 + var(--act, 0) * .14)); box-shadow: 0 0 calc(12px + var(--act, 0) * 22px) var(--g); }
+.hero[data-phase="on"] .mosaic i::after { animation: breathe 4.2s ease-in-out infinite; animation-delay: calc(var(--d) * 170ms); }
+@keyframes breathe { 50% { opacity: 1; } }
+/* Window hidden in the tray or minimized: nothing moves. */
+.app-hidden *, .app-hidden *::before, .app-hidden *::after { animation-play-state: paused !important; }
 /* the node stopped answering: amber, some tiles crack and dim */
 .hero[data-phase="degraded"] .mosaic i.lit { background: var(--warn); box-shadow: 0 0 10px rgba(251, 191, 36, .35); animation: falter 2.4s ease-in-out infinite; animation-delay: calc(var(--d) * 140ms); }
 .hero[data-phase="degraded"] .mosaic i:nth-child(3n) { opacity: .35; transform: translate(calc(var(--sx) * .5), 3px) rotate(calc(var(--sr) * .5)) scale(.9); }
@@ -159,7 +166,7 @@ select { cursor: pointer; }
 .mosaic.burst i { animation: burst .9s cubic-bezier(.2, .8, .3, 1) both !important; animation-delay: calc(var(--r) * 90ms) !important; }
 @keyframes burst { 35% { transform: scale(1.18); filter: brightness(1.6); box-shadow: 0 0 26px var(--g); } }
 @media (prefers-reduced-motion: reduce) {
-  .mosaic, .mosaic i, .steps li .st-dot { animation: none !important; transition: none !important; }
+  .mosaic, .mosaic i, .mosaic i::after, .steps li .st-dot { animation: none !important; transition: none !important; }
 }
 
 .seg { display: inline-flex; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 4px; }

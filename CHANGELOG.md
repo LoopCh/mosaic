@@ -26,6 +26,11 @@ Newest first. Versions before 0.5 cover Windows only.
 - **Leftovers**: a blocking interface from an earlier session is removed when the new connection does not use
   Mosaic's TUN (system proxy, sing-box adapter) — before, direct traffic and WebRTC calls stayed broken in
   those modes. A leftover interface without the kill switch is removed at start.
+- **Less GPU and memory (Windows)**: the connected mosaic no longer animates `filter`/`box-shadow` (16 tiles
+  repainted 60 times a second) — only the opacity of a pre-drawn glow breathes, which the GPU blends without
+  repainting (main-thread work on Home: about 25× less). The traffic chart re-allocated its canvas every second
+  at 125 % / 150 % display scaling; fixed. Hidden in the tray or minimized, the page stops all animations and
+  redraws and polls every 5 s instead of every second.
 - **Diagnostic report**: kill switch state and the routing table (`ip route`, `ip -6 route`, `ip rule`, links) on
   Linux, the recent failed connections, and the log with connection lines capped so they do not push out the
   rest. Public IPv6 addresses are now hidden as well.

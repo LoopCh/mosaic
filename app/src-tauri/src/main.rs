@@ -13,6 +13,7 @@ use mosaic_core::updates::{AppUpdate, EngineUpdate};
 use mosaic_core::stats::ConnView;
 use mosaic_core::Controller;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::Emitter;
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, State, WindowEvent, Wry};
 
@@ -226,6 +227,7 @@ fn show_main(app: &AppHandle) {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+        let _ = w.emit("mosaic://visible", true);
     }
 }
 
@@ -467,7 +469,16 @@ fn main() {
                 let ctl = window.state::<Arc<Controller>>();
                 if window.label() == "main" && ctl.close_to_tray.load(Relaxed) {
                     let _ = window.hide();
+                    // The page keeps running in a hidden window: tell it to stop drawing.
+                    let _ = window.emit("mosaic://visible", false);
                     api.prevent_close();
+                }
+            }
+            // Minimized or restored (the taskbar): the same for the page.
+            if let WindowEvent::Resized(_) = event {
+                if window.label() == "main" {
+                    let shown = window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
+                    let _ = window.emit("mosaic://visible", shown);
                 }
             }
         })

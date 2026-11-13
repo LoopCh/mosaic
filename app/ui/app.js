@@ -183,6 +183,7 @@ async function poll() {
     if (l !== lang) { lang = l; rerenderAll(); }
     applyPlatform();
     renderStatus(true);
+    if (!appVisible) { pollTimer = setTimeout(poll, 5000); return; }
     renderUpdateBanner();
     if (view === 'home') renderHome();
     if (view === 'nodes') renderNodes();
@@ -190,10 +191,30 @@ async function poll() {
   } catch (e) {
     console.error(e);
   }
-  setTimeout(poll, 1000);
+  pollTimer = setTimeout(poll, appVisible ? 1000 : 5000);
 }
 
+// Hidden in the tray or minimized, the page still runs (WebView2 does not know the window is
+// hidden): stop the animations, the per-second redraws and slow the polling down — otherwise
+// the GPU process keeps rendering a picture nobody sees.
+let appVisible = true, pollTimer = null;
+function setAppVisible(v) {
+  if (appVisible === v) return;
+  appVisible = v;
+  document.documentElement.classList.toggle('app-hidden', !v);
+  if (v) { clearTimeout(pollTimer); poll(); }
+}
+document.addEventListener('visibilitychange', () => setAppVisible(!document.hidden));
+try {
+  if (TAURI && TAURI.event) TAURI.event.listen('mosaic://visible', (e) => setAppVisible(!!e.payload));
+  if (TAURI && TAURI.window) {
+    const w = TAURI.window.getCurrentWindow();
+    Promise.all([w.isVisible(), w.isMinimized()]).then(([vis, min]) => setAppVisible(vis && !min)).catch(() => {});
+  }
+} catch (e) { console.error(e); }
+
 async function tickView() {
+  if (!appVisible) return;
   try {
     if (view === 'conns') renderConns(await invoke('connections'));
     if (view === 'logs') await pollLogs();
@@ -323,7 +344,9 @@ function renderMosaic(ph) {
   MOSAIC_ORDER.forEach((idx, k) => tiles[idx].classList.toggle('lit', k < lit));
   // Live traffic makes the connected mosaic glow brighter.
   const rate = (traffic.down.at(-1) || 0) + (traffic.up.at(-1) || 0);
-  m.style.setProperty('--act', Math.min(1, Math.log10(rate + 1) / 7).toFixed(2));
+  // In steps of a quarter: the glow is redrawn only when the level really changes.
+  const act = String(Math.round(Math.min(1, Math.log10(rate + 1) / 7) * 4) / 4);
+  if (m.style.getPropertyValue('--act') !== act) m.style.setProperty('--act', act);
   m.disabled = busy();
   m.title = ph === 'on' || ph === 'degraded' ? t('hero.disconnect') : t('hero.connect');
 }
@@ -511,10 +534,13 @@ $('#current-node').addEventListener('click', () => {
 function drawSpark() {
   const c = $('#spark');
   const w = c.clientWidth, h = 120, dpr = window.devicePixelRatio || 1;
-  if (!w) return;
-  if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+  if (!w || !appVisible) return;
+  // Whole pixels: with 125 % / 150 % scaling w × dpr is fractional, the canvas never matched
+  // and was re-allocated (a new GPU buffer) every second.
+  const W = Math.round(w * dpr), H = Math.round(h * dpr);
+  if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
   const g = c.getContext('2d');
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.setTransform(W / w, 0, 0, H / h, 0, 0);
   g.clearRect(0, 0, w, h);
   const max = Math.max(1024, ...traffic.up, ...traffic.down) * 1.15;
   g.strokeStyle = 'rgba(255,255,255,0.05)';
